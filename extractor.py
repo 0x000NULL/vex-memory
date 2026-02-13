@@ -19,7 +19,7 @@ import os
 import re
 import json
 import spacy
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Dict, Optional, Tuple, Any, Set
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -68,6 +68,8 @@ class Entity:
     aliases: List[str]
     confidence: float = 1.0
     attributes: Dict[str, Any] = None
+    mention_count: int = 1
+    importance_score: float = 0.5
     
     def __post_init__(self):
         if self.attributes is None:
@@ -115,6 +117,8 @@ class MemoryNode:
     content: str
     event_time: Optional[datetime] = None
     importance_score: float = 0.5
+    decay_factor: float = 1.0
+    access_count: int = 0
     source: str = "extraction"
     source_file: str = ""
     entities: List[Entity] = None

@@ -396,8 +396,15 @@ class MemoryMigrator:
                 consolidator.current_memories = consolidated_memories.copy()
                 
                 # Process memories for this date
+                # Create a dummy run for tracking
+                dummy_run = type('DummyRun', (), {
+                    'entities_created': 0, 'entities_updated': 0,
+                    'relations_created': 0, 'conflicts_detected': 0,
+                    'memories_merged': 0, 'memories_decayed': 0,
+                    'memories_processed': 0, 'logs': []
+                })()
                 for memory in date_memories:
-                    processed = consolidator._process_single_memory(memory, None)  # No run tracking for migration
+                    processed = consolidator._process_single_memory(memory, dummy_run)
                     if processed:
                         consolidated_memories.append(processed)
             

@@ -1,0 +1,30 @@
+FROM postgres:16
+
+# Install build dependencies for AGE and pgvector
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    git \
+    postgresql-server-dev-16 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install pgvector
+RUN cd /tmp && \
+    git clone --branch v0.7.4 https://github.com/pgvector/pgvector.git && \
+    cd pgvector && \
+    make && make install && \
+    rm -rf /tmp/pgvector
+
+# Install Apache AGE
+RUN cd /tmp && \
+    git clone --branch PG16/v1.5.0-rc0 https://github.com/apache/age.git && \
+    cd age && \
+    make && make install && \
+    rm -rf /tmp/age
+
+# Add AGE to shared_preload_libraries
+RUN echo "shared_preload_libraries = 'age'" >> /usr/share/postgresql/postgresql.conf.sample
+
+# Copy init script
+COPY docker-initdb.sh /docker-entrypoint-initdb.d/01-init.sh
+COPY schema.sql /docker-entrypoint-initdb.d/02-schema.sql
+RUN chmod +x /docker-entrypoint-initdb.d/01-init.sh

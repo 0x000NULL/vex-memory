@@ -2,4 +2,11 @@ venv/
 __pycache__/
 *.pyc
 staging/
-*.db
+*.sqlite
+*.sqlite3
+.pytest_cache/
+*.egg-info/
+consolidation_output/
+migration_staging/
+extracted_memories.json
+__pycache__/
