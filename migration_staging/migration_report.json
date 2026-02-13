@@ -1,0 +1,179 @@
+{
+  "migration_info": {
+    "start_time": "2026-02-13T01:53:38.084378",
+    "end_time": "2026-02-13T01:53:51.055929",
+    "duration_seconds": 12.971551,
+    "total_files_processed": 22,
+    "total_files_failed": 0
+  },
+  "memory_statistics": {
+    "total_memories": 1067,
+    "memories_by_type": {
+      "semantic": 656,
+      "procedural": 215,
+      "episodic": 166,
+      "emotional": 30
+    },
+    "memories_by_source": {
+      "long_term_memory": 15,
+      "daily_log": 70,
+      "file_music-gen-research.md": 35,
+      "file_data-broker-removal-guide.md": 90,
+      "file_glpi-projects.md": 10,
+      "file_japanese-learning-plan.md": 45,
+      "file_framework-ubuntu-headless.md": 76,
+      "file_japan-trip.md": 11,
+      "file_vexmark-completion-report.md": 36,
+      "file_vexmark-design.md": 51,
+      "file_dmr-migration-plan.md": 76,
+      "file_piston-accuracy-research.md": 44,
+      "file_security-policies-draft.md": 219,
+      "file_fleetpulse-improvements.md": 53,
+      "file_substack-plan.md": 16,
+      "file_rapidscale-mdr-prep.md": 36,
+      "file_self-optimization-research.md": 32,
+      "file_japan-itinerary.md": 83,
+      "file_japanese-progress.md": 2,
+      "file_memory-system-design.md": 67
+    },
+    "high_importance_count": 7,
+    "low_importance_count": 309,
+    "memories_with_entities": 874,
+    "memories_with_temporal_context": 86
+  },
+  "entity_statistics": {
+    "total_entities": 3308,
+    "unique_entities": 1398,
+    "entities_by_type": {
+      "concept": 584,
+      "person": 744,
+      "organization": 1210,
+      "location": 294,
+      "project": 294,
+      "technology": 176,
+      "event": 6
+    }
+  },
+  "content_statistics": {
+    "total_facts": 274,
+    "total_relationships": 49,
+    "total_emotional_markers": 20
+  },
+  "file_processing": {
+    "successful_files": [
+      {
+        "file": "/home/exedev/.openclaw/workspace/MEMORY.md",
+        "memories_extracted": 15,
+        "processed_at": "2026-02-13T01:53:38.305016"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/2026-02-11.md",
+        "memories_extracted": 40,
+        "processed_at": "2026-02-13T01:53:38.981610"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/2026-02-12.md",
+        "memories_extracted": 23,
+        "processed_at": "2026-02-13T01:53:39.324715"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/2026-02-13.md",
+        "memories_extracted": 7,
+        "processed_at": "2026-02-13T01:53:39.424316"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/music-gen-research.md",
+        "memories_extracted": 35,
+        "processed_at": "2026-02-13T01:53:39.803448"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/data-broker-removal-guide.md",
+        "memories_extracted": 90,
+        "processed_at": "2026-02-13T01:53:41.106985"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/glpi-projects.md",
+        "memories_extracted": 10,
+        "processed_at": "2026-02-13T01:53:41.202432"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/japanese-learning-plan.md",
+        "memories_extracted": 45,
+        "processed_at": "2026-02-13T01:53:41.715215"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/framework-ubuntu-headless.md",
+        "memories_extracted": 76,
+        "processed_at": "2026-02-13T01:53:42.324420"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/japan-trip.md",
+        "memories_extracted": 11,
+        "processed_at": "2026-02-13T01:53:42.441399"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/vexmark-completion-report.md",
+        "memories_extracted": 36,
+        "processed_at": "2026-02-13T01:53:42.794986"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/vexmark-design.md",
+        "memories_extracted": 51,
+        "processed_at": "2026-02-13T01:53:43.265262"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/dmr-migration-plan.md",
+        "memories_extracted": 76,
+        "processed_at": "2026-02-13T01:53:44.313453"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/piston-accuracy-research.md",
+        "memories_extracted": 44,
+        "processed_at": "2026-02-13T01:53:44.668139"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/security-policies-draft.md",
+        "memories_extracted": 219,
+        "processed_at": "2026-02-13T01:53:47.328382"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/fleetpulse-improvements.md",
+        "memories_extracted": 53,
+        "processed_at": "2026-02-13T01:53:47.827638"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/substack-plan.md",
+        "memories_extracted": 16,
+        "processed_at": "2026-02-13T01:53:47.952578"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/rapidscale-mdr-prep.md",
+        "memories_extracted": 36,
+        "processed_at": "2026-02-13T01:53:48.341837"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/self-optimization-research.md",
+        "memories_extracted": 32,
+        "processed_at": "2026-02-13T01:53:48.673726"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/japan-itinerary.md",
+        "memories_extracted": 83,
+        "processed_at": "2026-02-13T01:53:49.840480"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/japanese-progress.md",
+        "memories_extracted": 2,
+        "processed_at": "2026-02-13T01:53:49.875659"
+      },
+      {
+        "file": "/home/exedev/.openclaw/workspace/memory/memory-system-design.md",
+        "memories_extracted": 67,
+        "processed_at": "2026-02-13T01:53:50.962779"
+      }
+    ],
+    "failed_files": []
+  },
+  "errors": [],
+  "warnings": []
+}
