@@ -1,7 +1,5 @@
 -- Vex Memory System v2.0 - PostgreSQL Schema
--- Author: Vex
--- Date: February 13, 2026
--- Dependencies: PostgreSQL 15+, pgvector extension, Apache AGE extension
+-- Dependencies: PostgreSQL 16+, pgvector extension, Apache AGE extension
 
 -- =============================================================================
 -- EXTENSIONS
@@ -22,10 +20,10 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Memory types based on cognitive psychology
 CREATE TYPE memory_type AS ENUM (
-    'episodic',    -- Specific events: "Ethan said X at time Y"
-    'semantic',    -- Facts: "Ethan prefers Python over JavaScript"
+    'episodic',    -- Specific events: "User said X at time Y"
+    'semantic',    -- Facts: "Python supports async/await"
     'procedural',  -- How-tos: "To deploy project X, do Y"
-    'emotional'    -- Reactions: "Ethan was frustrated with deployment issues"
+    'emotional'    -- Reactions: "User was frustrated with deployment issues"
 );
 
 -- Relationship types for memory connections
@@ -61,8 +59,8 @@ CREATE TABLE memory_nodes (
     type memory_type NOT NULL,
     content TEXT NOT NULL,
     
-    -- Vector embedding for semantic search (nomic-embed-text-v1.5 = 768 dimensions)
-    embedding vector(768),
+    -- Vector embedding for semantic search (all-minilm = 384 dimensions)
+    embedding vector(384),
     
     -- Temporal information
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
@@ -99,7 +97,7 @@ CREATE TABLE entities (
     aliases TEXT[] DEFAULT '{}', -- alternative names/spellings
     
     -- Vector representation for entity matching
-    embedding vector(768),
+    embedding vector(384),
     
     -- Frequency and importance tracking
     mention_count INTEGER DEFAULT 1,
@@ -311,7 +309,7 @@ $$ LANGUAGE plpgsql IMMUTABLE;
 
 -- Find similar memories by embedding
 CREATE OR REPLACE FUNCTION find_similar_memories(
-    query_embedding vector(768),
+    query_embedding vector(384),
     similarity_threshold FLOAT DEFAULT 0.7,
     limit_count INTEGER DEFAULT 10
 ) RETURNS TABLE(
@@ -399,7 +397,7 @@ CREATE TABLE IF NOT EXISTS system_config (
 INSERT INTO system_config (key, value, description) VALUES 
 ('memory_system_version', '"2.0"', 'Current memory system version'),
 ('embedding_model', '"nomic-embed-text-v1.5"', 'Embedding model used for vectors'),
-('embedding_dimensions', '768', 'Vector dimensions'),
+('embedding_dimensions', '384', 'Vector dimensions'),
 ('default_importance_score', '0.5', 'Default importance for new memories'),
 ('consolidation_frequency', '"daily"', 'How often to run consolidation'),
 ('max_memory_age_days', '365', 'Maximum age before aggressive decay'),
@@ -414,7 +412,7 @@ INSERT INTO system_config (key, value, description) VALUES
 SELECT m.* FROM memory_nodes m
 JOIN memory_entity_mentions mem ON m.id = mem.memory_id
 JOIN entities e ON mem.entity_id = e.id
-WHERE e.canonical_name = 'Ethan';
+WHERE e.canonical_name = 'some_entity';
 
 -- Find related memories via graph traversal
 WITH RECURSIVE memory_walk AS (
@@ -458,7 +456,7 @@ entity_context AS (
     SELECT m.* FROM memory_nodes m
     JOIN memory_entity_mentions mem ON m.id = mem.memory_id
     JOIN entities e ON mem.entity_id = e.id
-    WHERE e.canonical_name = ANY(ARRAY['Ethan', 'Python', 'OpenClaw'])
+    WHERE e.canonical_name = ANY(ARRAY['Python', 'OpenClaw', 'Docker'])
     ORDER BY m.importance_score DESC 
     LIMIT 10
 )

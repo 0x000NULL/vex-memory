@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://vex:vex_memory_dev@localhost:5432/vex_memory"
+    "postgresql://vex:vex_memory_dev@localhost:5433/vex_memory"
 )
 
 

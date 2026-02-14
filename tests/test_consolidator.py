@@ -83,7 +83,7 @@ class TestEnhancedImportance:
     def test_entity_richness_boost(self, consolidator):
         plain = _make_memory("Something happened")
         rich = _make_memory("Something happened", entities=[
-            Entity(name="Ethan", type=EntityType.PERSON, canonical_name="ethan", aliases=[], mention_count=10),
+            Entity(name="Alice", type=EntityType.PERSON, canonical_name="alice", aliases=[], mention_count=10),
         ])
         assert consolidator._calculate_enhanced_importance(rich) >= consolidator._calculate_enhanced_importance(plain)
 

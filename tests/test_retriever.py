@@ -14,8 +14,8 @@ def sample_memories():
     return [
         MemoryNode(id="m1", type=MemoryType.SEMANTIC, content="Python is a popular programming language", importance_score=0.7, event_time=datetime.now()),
         MemoryNode(id="m2", type=MemoryType.PROCEDURAL, content="How to deploy with Docker: step 1 build image step 2 push", importance_score=0.8, event_time=datetime.now()),
-        MemoryNode(id="m3", type=MemoryType.EPISODIC, content="Yesterday Ethan fixed the PostgreSQL connection bug", importance_score=0.6, event_time=datetime.now() - timedelta(days=1)),
-        MemoryNode(id="m4", type=MemoryType.EMOTIONAL, content="Ethan prefers Linux over macOS for development", importance_score=0.5, event_time=datetime.now() - timedelta(days=7)),
+        MemoryNode(id="m3", type=MemoryType.EPISODIC, content="Yesterday Alice fixed the PostgreSQL connection bug", importance_score=0.6, event_time=datetime.now() - timedelta(days=1)),
+        MemoryNode(id="m4", type=MemoryType.EMOTIONAL, content="Alice prefers Linux over macOS for development", importance_score=0.5, event_time=datetime.now() - timedelta(days=7)),
         MemoryNode(id="m5", type=MemoryType.SEMANTIC, content="Docker containers provide process isolation", importance_score=0.6, event_time=datetime.now()),
     ]
 
@@ -67,13 +67,13 @@ class TestKeywordSearch:
 
 class TestEntitySearch:
     def test_entity_extraction(self, retriever):
-        entities = retriever._extract_query_entities("Tell me about Ethan and Python")
+        entities = retriever._extract_query_entities("Tell me about Alice and Python")
         lower = [e.lower() for e in entities]
-        assert "ethan" in lower
+        assert "alice" in lower
         assert "python" in lower
 
     def test_entity_based_search(self, retriever):
-        qc = QueryContext(query="Ethan", mentioned_entities=["Ethan"])
+        qc = QueryContext(query="Alice", mentioned_entities=["Alice"])
         results = retriever._entity_based_search(qc)
         assert len(results) > 0
 

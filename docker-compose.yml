@@ -8,13 +8,13 @@ services:
     ports:
       - "5433:5432"
     environment:
-      POSTGRES_USER: vex
-      POSTGRES_PASSWORD: vex_memory_dev
-      POSTGRES_DB: vex_memory
+      POSTGRES_USER: ${POSTGRES_USER:-vex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vex_memory_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-vex_memory}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vex -d vex_memory"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vex} -d ${POSTGRES_DB:-vex_memory}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -26,13 +26,17 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://vex:vex_memory_dev@db:5432/vex_memory
-      VEX_ENV: docker
+      DATABASE_URL: postgresql://${POSTGRES_USER:-vex}:${POSTGRES_PASSWORD:-vex_memory_dev}@db:5432/${POSTGRES_DB:-vex_memory}
+      VEX_ENV: ${VEX_ENV:-docker}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      EMBED_MODEL: ${EMBED_MODEL:-all-minilm}
+      AUTO_EXTRACT_ENABLED: ${AUTO_EXTRACT_ENABLED:-false}
+      AUTO_EXTRACT_THRESHOLD: ${AUTO_EXTRACT_THRESHOLD:-0.5}
     depends_on:
       db:
         condition: service_healthy
-    volumes:
-      - .:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   pgdata:

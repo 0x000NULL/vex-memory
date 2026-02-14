@@ -63,9 +63,9 @@ class TestClassification:
 
 class TestEntityExtraction:
     def test_known_entities_found(self, extractor):
-        entities = extractor._extract_entities("Ethan uses Python for most projects")
+        entities = extractor._extract_entities("Alice uses Python for most projects")
         names = {e.canonical_name for e in entities}
-        assert "ethan" in names
+        assert "alice" in names
         assert "python" in names
 
     def test_deduplication(self, extractor):
@@ -122,7 +122,7 @@ class TestEmotionalMarkers:
 
 class TestFileExtraction:
     def test_extract_from_daily_log(self, extractor):
-        content = "# Morning\nWe discussed the deployment plan with Ethan.\n\n# Afternoon\nFixed a critical bug in the Python service that was causing memory leaks."
+        content = "# Morning\nWe discussed the deployment plan with Alice.\n\n# Afternoon\nFixed a critical bug in the Python service that was causing memory leaks."
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, prefix="2026-01-15") as f:
             f.write(content)
             path = f.name
@@ -139,7 +139,7 @@ class TestFileExtraction:
                 os.unlink(daily_path)
 
     def test_extract_from_long_term(self, extractor):
-        content = "# Preferences\nEthan prefers Python over JavaScript for backend work.\n\n# Projects\nOpenClaw is an AI orchestration system."
+        content = "# Preferences\nAlice prefers Python over JavaScript for backend work.\n\n# Projects\nOpenClaw is an AI orchestration system."
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, prefix="MEMORY") as f:
             f.write(content)
             path = f.name

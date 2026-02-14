@@ -9,8 +9,6 @@ This module handles the critical transformation from raw daily memories into
 organized, interconnected long-term knowledge. Like human sleep memory processing,
 it strengthens important connections and allows less important memories to fade.
 
-Author: Vex
-Date: February 13, 2026
 """
 
 import os
@@ -843,6 +841,302 @@ class MemoryConsolidator:
         files_created['summary'] = summary_file
         
         return files_created
+
+
+class PgVectorConsolidator:
+    """Database-backed consolidation using pgvector for semantic clustering."""
+
+    DB_DSN = os.environ.get(
+        "DATABASE_URL",
+        "postgresql://vex:vex_memory_dev@localhost:5433/vex_memory",
+    )
+    OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+    EMBED_MODEL = os.environ.get("EMBED_MODEL", "all-minilm")
+
+    def __init__(self, dsn: str | None = None):
+        self.dsn = dsn or self.DB_DSN
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        self._psycopg2 = psycopg2
+        self._RealDictCursor = RealDictCursor
+
+    # -- helpers ---------------------------------------------------------------
+
+    def _conn(self):
+        return self._psycopg2.connect(self.dsn, cursor_factory=self._RealDictCursor)
+
+    def _get_embedding(self, text: str) -> Optional[List[float]]:
+        import httpx
+        try:
+            r = httpx.post(
+                f"{self.OLLAMA_URL}/api/embeddings",
+                json={"model": self.EMBED_MODEL, "prompt": text[:8000]},
+                timeout=30.0,
+            )
+            if r.status_code == 200:
+                return r.json().get("embedding")
+        except Exception as e:
+            logger.warning(f"Embedding failed: {e}")
+        return None
+
+    # -- public API ------------------------------------------------------------
+
+    def consolidate_related_memories(
+        self,
+        similarity_threshold: float = 0.75,
+        min_cluster_size: int = 3,
+    ) -> Dict[str, Any]:
+        """Find clusters of semantically similar memories and create summaries.
+
+        Uses pgvector cosine similarity to find clusters, creates a summary
+        memory for each cluster, and lowers the importance of originals.
+        """
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+
+            # Fetch all memories that have embeddings and aren't already summaries
+            cur.execute(
+                """SELECT id::text, content, importance_score, type::text, embedding::text
+                   FROM memory_nodes
+                   WHERE embedding IS NOT NULL
+                     AND (metadata->>'is_consolidation_summary')::boolean IS NOT TRUE
+                   ORDER BY importance_score DESC"""
+            )
+            rows = cur.fetchall()
+            if len(rows) < min_cluster_size:
+                return {"clusters_created": 0, "memories_affected": 0, "summaries": []}
+
+            # Build adjacency via pairwise similarity in DB
+            # For each memory, find its neighbours above threshold
+            id_to_row = {r["id"]: r for r in rows}
+            all_ids = list(id_to_row.keys())
+
+            # Use DB to compute pairwise similarities efficiently
+            neighbours: Dict[str, Set[str]] = defaultdict(set)
+            for row in rows:
+                cur.execute(
+                    """SELECT id::text, 1.0 - (embedding <=> %s::vector) AS sim
+                       FROM memory_nodes
+                       WHERE embedding IS NOT NULL
+                         AND id != %s
+                         AND (metadata->>'is_consolidation_summary')::boolean IS NOT TRUE
+                         AND 1.0 - (embedding <=> %s::vector) >= %s""",
+                    (row["embedding"], row["id"], row["embedding"], similarity_threshold),
+                )
+                for nb in cur.fetchall():
+                    if nb["id"] in id_to_row:
+                        neighbours[row["id"]].add(nb["id"])
+                        neighbours[nb["id"]].add(row["id"])
+
+            # Greedy clustering: pick node with most neighbours, form cluster
+            clustered: Set[str] = set()
+            clusters: List[List[str]] = []
+
+            sorted_ids = sorted(all_ids, key=lambda i: len(neighbours.get(i, set())), reverse=True)
+            for seed in sorted_ids:
+                if seed in clustered:
+                    continue
+                nbs = neighbours.get(seed, set()) - clustered
+                cluster = {seed} | nbs
+                if len(cluster) < min_cluster_size:
+                    continue
+                clusters.append(list(cluster))
+                clustered |= cluster
+
+            # Create summary memories for each cluster
+            summaries_created = []
+            total_affected = 0
+
+            for cluster_ids in clusters:
+                cluster_rows = [id_to_row[i] for i in cluster_ids]
+                max_importance = max(r["importance_score"] for r in cluster_rows)
+
+                # Build summary text
+                key_points = []
+                for r in cluster_rows:
+                    # Take first 150 chars as key point
+                    point = r["content"][:150].strip()
+                    if len(r["content"]) > 150:
+                        point += "..."
+                    key_points.append(f"- {point}")
+
+                summary_content = (
+                    f"Summary of {len(cluster_ids)} related memories:\n"
+                    + "\n".join(key_points)
+                )
+                summary_importance = min(1.0, max_importance * 1.2)
+
+                # Get embedding for summary
+                summary_embedding = self._get_embedding(summary_content)
+
+                summary_id = str(uuid.uuid4())
+                import json as _json
+                meta = _json.dumps({
+                    "is_consolidation_summary": True,
+                    "source_memory_ids": cluster_ids,
+                    "consolidated_at": datetime.now().isoformat(),
+                })
+
+                if summary_embedding:
+                    cur.execute(
+                        """INSERT INTO memory_nodes
+                           (id, type, content, importance_score, source, metadata, embedding)
+                           VALUES (%s, 'semantic'::memory_type, %s, %s, 'consolidation', %s::jsonb, %s::vector)""",
+                        (summary_id, summary_content, summary_importance, meta, str(summary_embedding)),
+                    )
+                else:
+                    cur.execute(
+                        """INSERT INTO memory_nodes
+                           (id, type, content, importance_score, source, metadata)
+                           VALUES (%s, 'semantic'::memory_type, %s, %s, 'consolidation', %s::jsonb)""",
+                        (summary_id, summary_content, summary_importance, meta),
+                    )
+
+                # Lower importance of originals
+                lowered_importance = max_importance * 0.5
+                for mem_id in cluster_ids:
+                    cur.execute(
+                        """UPDATE memory_nodes
+                           SET importance_score = LEAST(importance_score, %s),
+                               metadata = metadata || %s::jsonb
+                           WHERE id = %s""",
+                        (
+                            lowered_importance,
+                            _json.dumps({"consolidated_into": summary_id}),
+                            mem_id,
+                        ),
+                    )
+
+                total_affected += len(cluster_ids)
+                summaries_created.append({
+                    "summary_id": summary_id,
+                    "source_count": len(cluster_ids),
+                    "importance": summary_importance,
+                })
+
+            conn.commit()
+            return {
+                "clusters_created": len(clusters),
+                "memories_affected": total_affected,
+                "summaries": summaries_created,
+            }
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"consolidate_related_memories failed: {e}", exc_info=True)
+            raise
+        finally:
+            conn.close()
+
+    def consolidate_by_topic(self) -> Dict[str, Any]:
+        """Group memories by entity/topic and create topic summaries.
+
+        Finds entities with multiple memory mentions and creates a single
+        topic summary for each that doesn't already have one.
+        """
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+
+            # Find entities with >= 3 mentions that don't already have a topic summary
+            cur.execute(
+                """SELECT e.id::text AS entity_id, e.canonical_name, e.name,
+                          COUNT(mem.memory_id) AS cnt
+                   FROM entities e
+                   JOIN memory_entity_mentions mem ON e.id = mem.entity_id
+                   GROUP BY e.id, e.canonical_name, e.name
+                   HAVING COUNT(mem.memory_id) >= 3
+                   ORDER BY cnt DESC"""
+            )
+            entities = cur.fetchall()
+
+            summaries_created = []
+            for ent in entities:
+                ent_name = ent["canonical_name"] or ent["name"]
+
+                # Check if we already have a topic summary for this entity
+                import json as _json
+                cur.execute(
+                    """SELECT id FROM memory_nodes
+                       WHERE source = 'topic_consolidation'
+                         AND metadata->>'topic_entity' = %s
+                       LIMIT 1""",
+                    (ent_name,),
+                )
+                if cur.fetchone():
+                    continue
+
+                # Fetch memories for this entity
+                cur.execute(
+                    """SELECT m.id::text, m.content, m.importance_score, m.type::text
+                       FROM memory_nodes m
+                       JOIN memory_entity_mentions mem ON m.id = mem.memory_id
+                       WHERE mem.entity_id = %s
+                       ORDER BY m.importance_score DESC
+                       LIMIT 20""",
+                    (ent["entity_id"],),
+                )
+                memories = cur.fetchall()
+                if len(memories) < 3:
+                    continue
+
+                max_importance = max(m["importance_score"] for m in memories)
+
+                key_points = []
+                for m in memories:
+                    point = m["content"][:150].strip()
+                    if len(m["content"]) > 150:
+                        point += "..."
+                    key_points.append(f"- {point}")
+
+                summary_content = (
+                    f"Topic summary for '{ent_name}' ({len(memories)} memories):\n"
+                    + "\n".join(key_points)
+                )
+                summary_importance = min(1.0, max_importance * 1.15)
+                summary_embedding = self._get_embedding(summary_content)
+
+                summary_id = str(uuid.uuid4())
+                meta = _json.dumps({
+                    "is_consolidation_summary": True,
+                    "topic_entity": ent_name,
+                    "source_memory_count": len(memories),
+                    "consolidated_at": datetime.now().isoformat(),
+                })
+
+                if summary_embedding:
+                    cur.execute(
+                        """INSERT INTO memory_nodes
+                           (id, type, content, importance_score, source, metadata, embedding)
+                           VALUES (%s, 'semantic'::memory_type, %s, %s, 'topic_consolidation', %s::jsonb, %s::vector)""",
+                        (summary_id, summary_content, summary_importance, meta, str(summary_embedding)),
+                    )
+                else:
+                    cur.execute(
+                        """INSERT INTO memory_nodes
+                           (id, type, content, importance_score, source, metadata)
+                           VALUES (%s, 'semantic'::memory_type, %s, %s, 'topic_consolidation', %s::jsonb)""",
+                        (summary_id, summary_content, summary_importance, meta),
+                    )
+
+                summaries_created.append({
+                    "summary_id": summary_id,
+                    "topic": ent_name,
+                    "source_count": len(memories),
+                    "importance": summary_importance,
+                })
+
+            conn.commit()
+            return {
+                "topics_summarized": len(summaries_created),
+                "summaries": summaries_created,
+            }
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"consolidate_by_topic failed: {e}", exc_info=True)
+            raise
+        finally:
+            conn.close()
 
 
 # CLI interface for testing

@@ -1,138 +1,279 @@
-# Vex Memory System v2.0
+<p align="center">
+  <h1 align="center">🧠 Vex Memory</h1>
+  <p align="center"><strong>A human-inspired memory system for AI agents</strong></p>
+  <p align="center">
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+    <img src="https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
+    <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL 16">
+    <img src="https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white" alt="Docker">
+    <img src="https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
+  </p>
+</p>
 
-A hybrid **PostgreSQL + Apache AGE (graph) + pgvector (embeddings)** memory system for AI agents. It extracts, consolidates, retrieves, and serves structured memories through a REST API.
+---
 
-## Architecture
+Most AI memory systems are just vector stores with a retrieval step. Vex Memory is different — it models memory the way humans actually remember things: important memories stay vivid, unused ones fade via **Ebbinghaus-inspired decay curves**, related concepts form **graph relationships** you can traverse, emotional context gets tagged automatically, and a **consolidation engine** periodically merges and summarizes related memories like your brain does during sleep. The result is a memory system that gets *smarter* over time, not just bigger.
+
+## ✨ Features
+
+| Feature | Description |
+|---------|-------------|
+| **🔻 Memory Decay** | Exponential forgetting curves with 30-day half-life. Frequently accessed memories resist decay. Importance scores adjust automatically over time. |
+| **🤖 Auto-Extraction** | NLP pipeline (spaCy NER + pattern matching) extracts decisions, events, facts, and learnings from raw conversation text — no LLM needed. |
+| **🔍 Deduplication** | Embedding-based similarity detection (cosine > 0.85) prevents redundant memories. Near-duplicates are merged, preserving the richer content. |
+| **😴 Consolidation** | "Sleep cycle" engine clusters semantically similar memories, creates summaries, and lowers importance of originals. Topic-based consolidation groups by entity. |
+| **🕸️ Graph Relationships** | Apache AGE property graph for memory traversal. Auto-links similar memories (cosine > 0.7). Manual relationship types: CAUSED_BY, PART_OF, RELATED_TO, PRECEDED, CONTRADICTS, SUPPORTS. |
+| **📊 Dashboard** | Real-time web dashboard showing memory stats, types, emotions, and recent activity at `localhost:8000/dashboard`. |
+| **💭 Emotional Tagging** | Keyword-based sentiment analysis tags memories with dominant emotions (joy, pride, frustration, excitement, concern, relief, curiosity, satisfaction). |
+| **🎯 Context Endpoints** | Purpose-built endpoints for agent integration: session startup context, conversation context with history, and recent-memories summary. |
+| **📈 Feedback Loops** | Track which memories are actually *used*, *ignored*, or *corrected*. Importance scores adjust based on observed usefulness over time. |
+| **⏰ Temporal Reasoning** | Natural language date parsing ("last Tuesday", "2 weeks ago", "since January"). Timeline queries and change-since endpoints. |
+
+## 🏗️ Architecture
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌──────────────┐
-│  Markdown   │────▶│  Extractor   │────▶│ Consolidator │
-│    Files    │     │  (NLP/spaCy) │     │  (decay/     │
-└─────────────┘     └──────────────┘     │   merging)   │
-                                         └──────┬───────┘
-                                                │
-                    ┌──────────────┐     ┌───────▼───────┐
-                    │   FastAPI    │◀───▶│  PostgreSQL   │
-                    │   REST API   │     │  + AGE graph  │
-                    └──────────────┘     │  + pgvector   │
-                                         └───────────────┘
+┌─────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│   Your Agent    │────▶│   FastAPI REST    │────▶│   PostgreSQL 16  │
+│  (OpenClaw /    │◀────│    API (:8000)    │◀────│                  │
+│   LangChain /   │     │                  │     │  ┌────────────┐  │
+│   any REST)     │     │  • Store/Query   │     │  │  pgvector  │  │
+└─────────────────┘     │  • Context       │     │  │ (embeddings│  │
+                        │  • Extract       │     │  │  384-dim)  │  │
+┌─────────────────┐     │  • Consolidate   │     │  ├────────────┤  │
+│     Ollama      │◀────│  • Graph         │     │  │ Apache AGE │  │
+│  (embeddings)   │     │  • Feedback      │     │  │  (graph)   │  │
+│  all-minilm     │     │  • Dashboard     │     │  └────────────┘  │
+└─────────────────┘     └──────────────────┘     └──────────────────┘
 ```
 
-### Components
-
-| Module | Purpose |
-|--------|---------|
-| `extractor.py` | NLP pipeline: extracts entities, facts, relationships, emotions from text |
-| `consolidator.py` | "Sleep cycle": deduplication, conflict detection, Ebbinghaus forgetting curves, memory merging |
-| `retriever.py` | Multi-strategy retrieval: keyword, temporal, entity, procedural, associative, semantic |
-| `migrate_flat_files.py` | One-time migration from markdown files to structured JSON/DB |
-| `api.py` | FastAPI service with CRUD, query, extract, and entity endpoints |
-| `db.py` | PostgreSQL connection management |
-| `schema.sql` | Full DDL: tables, indexes, AGE graph, pgvector, triggers, views |
-
-## Quick Start
-
-### Docker Compose (recommended)
+## 🚀 Quick Start
 
 ```bash
-docker compose up --build
+git clone https://github.com/0x000NULL/vex-memory.git
+cd vex-memory
+cp .env.example .env    # review and customize
+docker compose up -d
 ```
 
-This starts:
-- **PostgreSQL 16** with pgvector + Apache AGE on port `5432`
-- **FastAPI** on port `8000`
+That's it. API is at `http://localhost:8000`, dashboard at `http://localhost:8000/dashboard`.
 
-### Local Development
+> **Note:** Ollama runs on the host for GPU access. Install it separately: `curl -fsSL https://ollama.com/install.sh | sh && ollama pull all-minilm`. The system degrades gracefully without it (keyword search instead of semantic search).
+
+## 📡 API Reference
+
+### Health & Stats
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python -m spacy download en_core_web_sm
+# Health check
+curl http://localhost:8000/health
 
-# Run API (DB optional — falls back to in-memory)
-uvicorn api:app --reload
-
-# Run tests
-pytest tests/ -v
+# System statistics
+curl http://localhost:8000/stats
 ```
 
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check (DB status, memory count) |
-| `GET` | `/stats` | System statistics |
-| `POST` | `/memories` | Create a memory |
-| `GET` | `/memories` | List memories (filter by type, importance) |
-| `GET` | `/memories/{id}` | Get a single memory |
-| `POST` | `/query` | Natural-language memory query |
-| `POST` | `/extract?content=...` | Extract memories from raw text |
-| `GET` | `/entities` | List known entities |
-
-### Example: Query memories
+### Memory CRUD
 
 ```bash
+# Create a memory
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Python 3.12 supports improved error messages", "type": "semantic", "importance_score": 0.7}'
+
+# List memories (with filters)
+curl "http://localhost:8000/memories?limit=10&type=semantic&min_importance=0.5"
+
+# Get a specific memory
+curl http://localhost:8000/memories/{id}
+
+# Update a memory
+curl -X PUT http://localhost:8000/memories/{id} \
+  -H "Content-Type: application/json" \
+  -d '{"importance_score": 0.9}'
+
+# Delete a memory
+curl -X DELETE http://localhost:8000/memories/{id}
+
+# Bulk create
+curl -X POST http://localhost:8000/memories/bulk \
+  -H "Content-Type: application/json" \
+  -d '{"memories": [{"content": "Fact 1", "type": "semantic"}, {"content": "Fact 2", "type": "semantic"}]}'
+```
+
+### Querying
+
+```bash
+# Semantic/keyword query
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{"query": "How do I deploy with Docker?", "max_tokens": 2000}'
+
+# Extract structured memories from raw text
+curl -X POST "http://localhost:8000/extract?content=We+decided+to+migrate+to+PostgreSQL+16+for+better+performance"
 ```
 
-### Example: Store a memory
+### Context Endpoints (Agent Integration)
 
 ```bash
-curl -X POST http://localhost:8000/memories \
+# Get context for a conversation message
+curl -X POST http://localhost:8000/context \
   -H "Content-Type: application/json" \
-  -d '{"content": "Ethan prefers Python for backend", "type": "semantic", "importance_score": 0.8}'
+  -d '{"message": "What did we decide about the database?", "max_tokens": 2000}'
+
+# Session startup — broad context pull
+curl -X POST http://localhost:8000/context/session-start \
+  -H "Content-Type: application/json" \
+  -d '{"first_message": "Good morning, what were we working on?", "max_tokens": 4000}'
+
+# Recent important memories (no query needed)
+curl http://localhost:8000/context/recent
 ```
 
-## Memory Types
-
-Based on cognitive psychology:
-
-- **Episodic** — Specific events: "Ethan said X at time Y"
-- **Semantic** — Facts: "Python supports async/await"
-- **Procedural** — How-tos: "To deploy, run docker compose up"
-- **Emotional** — Preferences: "Ethan prefers Linux over macOS"
-
-## Consolidation Algorithm
-
-The consolidator implements a biologically-inspired "sleep cycle":
-
-1. **Deduplication** — Jaccard similarity (threshold 0.85)
-2. **Importance scoring** — Multi-factor: recency × entity importance × content richness × type weight
-3. **Forgetting curves** — Ebbinghaus-inspired: `retention = e^(-t/S)` where S varies by memory type (semantic: 365d, procedural: 180d, episodic: 90d, emotional: 60d)
-4. **Decay resistance** — Access count, importance, and relationship density slow decay
-5. **Conflict detection** — Factual contradictions, temporal inconsistencies, preference evolution
-6. **Memory merging** — Highly similar memories consolidated into single richer nodes
-
-## Schema Highlights
-
-- **768-dim vectors** (nomic-embed-text-v1.5) with IVFFlat indexes
-- **Apache AGE graph** for traversal queries
-- **Ebbinghaus decay** via `calculate_current_relevance()` SQL function
-- **Entity registry** with canonical names, aliases, and type classification
-- **Conflict tracking** table with severity and resolution status
-
-## Testing
+### Conversation Auto-Extraction
 
 ```bash
-pytest tests/ -v --tb=short
+# Extract and store memories from conversation messages
+curl -X POST http://localhost:8000/memories/extract-from-conversation \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "We decided to use FastAPI for the backend"},
+      {"role": "assistant", "content": "Good choice. I deployed the initial version to staging."}
+    ],
+    "min_score": 0.3
+  }'
 ```
 
-Tests cover:
-- Extractor: section splitting, classification, entity extraction, importance scoring
-- Consolidator: deduplication, similarity, decay curves, conflict detection, merging
-- Retriever: intent inference, keyword/entity/procedural search, query pipeline
-- API: all endpoints, error handling, CRUD operations
+### Timeline & Temporal
 
-## Environment Variables
+```bash
+# Get memory timeline for a date range
+curl "http://localhost:8000/timeline?start=2026-02-01&end=2026-02-14"
+
+# What changed since a date
+curl http://localhost:8000/memories/since/2026-02-10
+```
+
+### Emotions
+
+```bash
+# Get memories by emotion
+curl http://localhost:8000/memories/by-emotion/excitement
+
+# Bulk-tag all untagged memories with emotions
+curl -X POST http://localhost:8000/memories/tag-emotions
+```
+
+### Graph Relationships
+
+```bash
+# Create a relationship
+curl -X POST http://localhost:8000/graph/link \
+  -H "Content-Type: application/json" \
+  -d '{"from_memory_id": "uuid1", "to_memory_id": "uuid2", "relationship_type": "CAUSED_BY"}'
+
+# Auto-link similar memories
+curl -X POST http://localhost:8000/graph/auto-link
+
+# Traverse from a memory (2 hops)
+curl "http://localhost:8000/graph/traverse/{memory_id}?depth=2"
+
+# Find shortest path between memories
+curl "http://localhost:8000/graph/path?from_id=uuid1&to_id=uuid2"
+
+# Get all memories about an entity
+curl http://localhost:8000/graph/subgraph/PostgreSQL
+```
+
+### Feedback & Learning
+
+```bash
+# Record that a memory was useful
+curl -X POST http://localhost:8000/feedback \
+  -H "Content-Type: application/json" \
+  -d '{"memory_id": "uuid", "feedback_type": "used"}'
+
+# Apply feedback to adjust importance scores
+curl -X POST http://localhost:8000/feedback/apply
+
+# View learning statistics
+curl http://localhost:8000/feedback/stats
+```
+
+### Maintenance
+
+```bash
+# Trigger memory consolidation
+curl -X POST "http://localhost:8000/memories/consolidate?similarity_threshold=0.75"
+
+# Run deduplication
+curl -X POST "http://localhost:8000/memories/deduplicate?threshold=0.9"
+
+# Recalculate decay factors
+curl -X POST http://localhost:8000/memories/decay-update
+
+# Backfill embeddings for memories missing them
+curl -X POST "http://localhost:8000/memories/backfill-embeddings?limit=100"
+```
+
+### Entities
+
+```bash
+# List known entities
+curl "http://localhost:8000/entities?limit=50"
+```
+
+## 📊 Dashboard
+
+Visit `http://localhost:8000/dashboard` to see a real-time overview of your memory system including memory counts, type distribution, emotional breakdown, and recent activity.
+
+## ⚙️ Configuration
+
+All configuration is via environment variables. See [`.env.example`](.env.example) for the full list.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgresql://vex:vex_memory_dev@localhost:5432/vex_memory` | PostgreSQL connection string |
-| `MEMORY_JSON` | `extracted_memories.json` | Fallback memory file when DB unavailable |
+| `POSTGRES_USER` | `vex` | Database user |
+| `POSTGRES_PASSWORD` | `vex_memory_dev` | Database password |
+| `POSTGRES_DB` | `vex_memory` | Database name |
+| `DATABASE_URL` | `postgresql://vex:vex_memory_dev@db:5432/vex_memory` | Full connection string |
+| `OLLAMA_URL` | `http://host.docker.internal:11434` | Ollama API endpoint |
+| `EMBED_MODEL` | `all-minilm` | Embedding model name |
+| `AUTO_EXTRACT_ENABLED` | `false` | Enable auto-extraction on ingest |
+| `AUTO_EXTRACT_THRESHOLD` | `0.5` | Minimum score for auto-extracted memories |
+| `VEX_ENV` | `docker` | Environment identifier |
 
-## License
+## 🔌 Built For
 
-Private — part of the Vex/OpenClaw ecosystem.
+- **[OpenClaw](https://github.com/openclaw)** — AI agent framework with persistent memory
+- **LangChain / LlamaIndex** — plug in via REST endpoints
+- **Any REST-capable agent** — standard HTTP API, no SDK required
+
+### Integration Example
+
+```python
+import requests
+
+# Store a memory
+requests.post("http://localhost:8000/memories", json={
+    "content": "User prefers dark mode interfaces",
+    "type": "semantic",
+    "importance_score": 0.7,
+    "source": "conversation"
+})
+
+# Get context for a new message
+ctx = requests.post("http://localhost:8000/context", json={
+    "message": "What are the user's UI preferences?",
+    "max_tokens": 2000
+}).json()
+
+print(ctx["context"])  # Relevant memories formatted as text
+```
+
+## 🤝 Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## 📄 License
+
+[MIT](LICENSE) © 2026

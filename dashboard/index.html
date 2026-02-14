@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vex Memory Explorer</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <!-- Stats Bar -->
+  <div id="stats-bar">
+    <div class="stat-pill"><span class="stat-label">Total</span><span class="stat-value" id="sb-total">—</span></div>
+    <div class="stat-pill"><span class="stat-label">Semantic</span><span class="stat-value" id="sb-semantic">—</span></div>
+    <div class="stat-pill"><span class="stat-label">Episodic</span><span class="stat-value" id="sb-episodic">—</span></div>
+    <div class="stat-pill"><span class="stat-label">Procedural</span><span class="stat-value" id="sb-procedural">—</span></div>
+    <div class="stat-pill"><span class="stat-label">Emotional</span><span class="stat-value" id="sb-emotional">—</span></div>
+    <div class="stat-pill"><span class="stat-label">Avg Importance</span><span class="stat-value" id="sb-avg-imp">—</span></div>
+    <div class="stat-pill"><span class="stat-label">Oldest</span><span class="stat-value" id="sb-oldest">—</span></div>
+    <div class="stat-pill"><span class="stat-label">Newest</span><span class="stat-value" id="sb-newest">—</span></div>
+  </div>
+
+  <!-- Top Bar -->
+  <header id="topbar">
+    <div class="logo">
+      <span class="logo-icon">🧠</span>
+      <h1>Vex Memory Explorer</h1>
+    </div>
+    <nav id="tabs">
+      <button class="tab active" data-view="graph">Graph</button>
+      <button class="tab" data-view="timeline">Timeline</button>
+      <button class="tab" data-view="search">Search</button>
+      <button class="tab" data-view="stats">Stats</button>
+    </nav>
+    <div id="search-mini">
+      <input type="text" id="quick-search" placeholder="Search memories…" />
+    </div>
+  </header>
+
+  <!-- Controls Bar (graph/timeline) -->
+  <div id="controls-bar">
+    <div class="control-group">
+      <label class="control-label">Type Filters:</label>
+      <label class="cb-label"><input type="checkbox" class="type-filter" value="semantic" checked /><span class="cb-dot" style="background:#00ff88"></span>Semantic</label>
+      <label class="cb-label"><input type="checkbox" class="type-filter" value="episodic" checked /><span class="cb-dot" style="background:#4a9eff"></span>Episodic</label>
+      <label class="cb-label"><input type="checkbox" class="type-filter" value="procedural" checked /><span class="cb-dot" style="background:#ff9f43"></span>Procedural</label>
+      <label class="cb-label"><input type="checkbox" class="type-filter" value="emotional" checked /><span class="cb-dot" style="background:#ff6b9d"></span>Emotional</label>
+    </div>
+    <div class="control-group">
+      <label class="control-label">Date Range:</label>
+      <input type="date" id="date-from" />
+      <span style="color:var(--dim)">→</span>
+      <input type="date" id="date-to" />
+    </div>
+    <div class="control-group">
+      <button id="heatmap-toggle" class="ctrl-btn">🌡️ Heatmap</button>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <main id="main">
+    <section id="view-graph" class="view active">
+      <svg id="graph-svg"></svg>
+    </section>
+    <section id="view-timeline" class="view">
+      <div id="timeline-container">
+        <div id="timeline-axis"></div>
+        <div id="timeline-items"></div>
+      </div>
+    </section>
+    <section id="view-search" class="view">
+      <div class="search-box">
+        <input type="text" id="search-input" placeholder="Semantic search across all memories…" />
+        <button id="search-btn">Search</button>
+      </div>
+      <div id="search-results"></div>
+    </section>
+    <section id="view-stats" class="view">
+      <div class="stats-grid">
+        <div class="stat-card" id="stat-totals"><h3>Overview</h3><div class="stat-numbers"></div></div>
+        <div class="stat-card" id="stat-donut"><h3>Memory Types</h3><svg id="donut-chart"></svg></div>
+        <div class="stat-card" id="stat-timeline-chart"><h3>Memories Over Time</h3><svg id="time-chart"></svg></div>
+        <div class="stat-card" id="stat-recent"><h3>Recent Memories</h3><div id="recent-list"></div></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Inspector Side Panel (read-only) -->
+  <aside id="inspector" class="hidden">
+    <button id="inspector-close">✕</button>
+    <div id="inspector-content"></div>
+  </aside>
+
+  <!-- Edit/Delete Modal -->
+  <div id="modal-overlay" class="hidden">
+    <div id="edit-modal">
+      <div class="modal-header">
+        <h2>Edit Memory</h2>
+        <button id="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-field">
+          <label>Content</label>
+          <textarea id="modal-content" rows="5"></textarea>
+        </div>
+        <div class="modal-row">
+          <div class="modal-field" style="flex:1">
+            <label>Type</label>
+            <select id="modal-type">
+              <option value="semantic">Semantic</option>
+              <option value="episodic">Episodic</option>
+              <option value="procedural">Procedural</option>
+              <option value="emotional">Emotional</option>
+            </select>
+          </div>
+          <div class="modal-field" style="flex:1">
+            <label>Importance</label>
+            <div class="importance-edit">
+              <input type="range" min="0" max="1" step="0.01" id="modal-importance" />
+              <span id="modal-imp-val">0.50</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="modal-delete" class="btn-danger">🗑 Delete</button>
+        <div style="flex:1"></div>
+        <button id="modal-cancel" class="btn-secondary">Cancel</button>
+        <button id="modal-save" class="btn-primary">💾 Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

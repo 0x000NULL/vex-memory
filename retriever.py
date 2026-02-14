@@ -8,8 +8,6 @@ This module provides multiple retrieval strategies and assembles optimal context
 windows from the memory database. It serves as the primary interface between the
 AI agent and the structured memory system.
 
-Author: Vex
-Date: February 13, 2026
 """
 
 import os
@@ -25,6 +23,7 @@ from collections import defaultdict, Counter
 
 from extractor import MemoryNode, Entity, MemoryType, EntityType
 from consolidator import MemoryConsolidator
+from temporal import parse_temporal_expression, temporal_search as temporal_search_fn
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -415,33 +414,17 @@ class MemoryRetriever:
         return relevant_memories[:self.max_memories_per_strategy]
 
     def _parse_temporal_query(self, query: str) -> List[Union[date, Tuple[date, date]]]:
-        """Parse temporal expressions from query."""
-        # Simplified temporal parsing
-        query_lower = query.lower()
-        today = date.today()
-        
-        filters = []
-        
-        if 'yesterday' in query_lower:
-            filters.append(today - timedelta(days=1))
-        elif 'today' in query_lower:
-            filters.append(today)
-        elif 'last week' in query_lower:
-            start = today - timedelta(days=today.weekday() + 7)
-            end = today - timedelta(days=today.weekday() + 1)
-            filters.append((start, end))
-        elif 'this week' in query_lower:
-            start = today - timedelta(days=today.weekday())
-            end = today + timedelta(days=6 - today.weekday())
-            filters.append((start, end))
-        elif 'last month' in query_lower:
-            # Approximate last month
-            start = today.replace(day=1) - timedelta(days=1)
-            start = start.replace(day=1)
-            end = today.replace(day=1) - timedelta(days=1)
-            filters.append((start, end))
-        
-        return filters
+        """Parse temporal expressions from query using the enhanced temporal parser."""
+        parsed = parse_temporal_expression(query)
+        if not parsed:
+            return []
+
+        start_d = parsed["start"].date() if hasattr(parsed["start"], 'date') else parsed["start"]
+        end_d = parsed["end"].date() if hasattr(parsed["end"], 'date') else parsed["end"]
+
+        if start_d == end_d:
+            return [start_d]
+        return [(start_d, end_d)]
 
     def _entity_based_search(self, query_context: QueryContext) -> List[MemoryNode]:
         """Search memories by entity mentions."""
@@ -491,7 +474,7 @@ class MemoryRetriever:
         entities.extend(capitalized_words)
         
         # Known entity patterns
-        known_entities = ['python', 'javascript', 'postgresql', 'docker', 'linux', 'ethan', 'seth']
+        known_entities = ['python', 'javascript', 'postgresql', 'docker', 'linux']
         query_lower = query.lower()
         for entity in known_entities:
             if entity in query_lower:

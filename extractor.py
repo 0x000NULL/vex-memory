@@ -11,8 +11,6 @@ This module parses natural language memory files and extracts:
 - Emotional markers (preferences, opinions, reactions)
 - Episodes (specific events with temporal context)
 
-Author: Vex
-Date: February 13, 2026
 """
 
 import os
@@ -157,8 +155,8 @@ class MemoryExtractor:
         
         # Known entities to help with classification
         self._known_entities = {
-            'person': {'ethan', 'seth', 'vex', 'claude', 'budget', 'developer', 'user'},
-            'project': {'openclaw', 'vex-memory', 'budget', 'framework', 'system'},
+            'person': {'developer', 'user'},
+            'project': {'openclaw', 'vex-memory', 'framework', 'system'},
             'technology': {'python', 'javascript', 'postgresql', 'docker', 'linux', 'typescript', 'sql'},
             'concept': {'memory', 'ai', 'consciousness', 'intelligence', 'learning', 'optimization'}
         }
@@ -432,8 +430,6 @@ class MemoryExtractor:
         
         # Handle common variations
         canonical_mappings = {
-            'ethan': 'ethan',
-            'seth': 'seth',
             'python': 'python',
             'javascript': 'javascript',
             'js': 'javascript',
