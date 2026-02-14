@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile.db
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_USER: vex
       POSTGRES_PASSWORD: vex_memory_dev

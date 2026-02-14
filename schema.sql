@@ -243,6 +243,8 @@ WHERE resolution_status = 'unresolved';
 -- =============================================================================
 
 -- Create AGE graph for advanced graph queries
+LOAD 'age';
+SET search_path = ag_catalog, public;
 SELECT create_graph('memory_graph');
 
 -- Note: AGE graph nodes and edges will be created via Python code

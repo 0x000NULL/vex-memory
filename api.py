@@ -158,6 +158,21 @@ def create_memory(body: MemoryCreate):
                 ),
             )
             row = cur.fetchone()
+
+            # Sync to in-memory retriever so queries/stats see it immediately
+            node = MemoryNode(
+                id=mem_id,
+                type=MemoryType(body.type),
+                content=body.content,
+                importance_score=body.importance_score,
+                source=body.source,
+                event_time=body.event_time,
+                metadata=body.metadata,
+            )
+            retriever = _get_retriever()
+            retriever.memories.append(node)
+            retriever._build_indices()
+
             return MemoryOut(**row)
     except Exception as e:
         logger.warning(f"DB insert failed, using in-memory fallback: {e}")
