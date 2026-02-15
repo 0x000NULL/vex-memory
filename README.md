@@ -10,6 +10,12 @@
   </p>
 </p>
 
+  <p align="center">
+    🌐 <a href="https://vexmemory.dev"><strong>vexmemory.dev</strong></a> · 
+    📦 <a href="https://github.com/0x000NULL/vex-memory">GitHub</a>
+  </p>
+</p>
+
 ---
 
 Most AI memory systems are just vector stores with a retrieval step. Vex Memory is different — it models memory the way humans actually remember things: important memories stay vivid, unused ones fade via **Ebbinghaus-inspired decay curves**, related concepts form **graph relationships** you can traverse, emotional context gets tagged automatically, and a **consolidation engine** periodically merges and summarizes related memories like your brain does during sleep. The result is a memory system that gets *smarter* over time, not just bigger.
