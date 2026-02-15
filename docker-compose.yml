@@ -38,5 +38,15 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    profiles: ["qdrant"]
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
 volumes:
   pgdata:
+  qdrant_data:

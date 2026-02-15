@@ -219,7 +219,49 @@ def _get_retriever() -> MemoryRetriever:
     if _retriever is None:
         mem_file = os.environ.get("MEMORY_JSON", "extracted_memories.json")
         _retriever = MemoryRetriever(memory_file=mem_file if os.path.exists(mem_file) else None)
+        # If retriever is empty but DB has memories, load from DB
+        if len(_retriever.memories) == 0 and db.check_health():
+            _load_retriever_from_db(_retriever)
     return _retriever
+
+
+def _load_retriever_from_db(retriever: MemoryRetriever):
+    """Populate in-memory retriever from PostgreSQL."""
+    try:
+        with db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id::text, content, type::text, importance_score, source,
+                           created_at
+                    FROM memory_nodes ORDER BY created_at DESC
+                """)
+                rows = cur.fetchall()
+        if not rows:
+            return
+        for row in rows:
+            mid = str(row['id'])
+            content = row['content']
+            mtype = row['type']
+            importance = row['importance_score']
+            source = row['source']
+            created = row['created_at']
+            try:
+                mt = MemoryType(mtype) if mtype else MemoryType.SEMANTIC
+            except ValueError:
+                mt = MemoryType.SEMANTIC
+            mem = MemoryNode(
+                id=mid,
+                content=content or "",
+                type=mt,
+                importance_score=float(importance or 0.5),
+                source=source or "database",
+                event_time=created,
+            )
+            retriever.memories.append(mem)
+        retriever._build_indices()
+        logger.info(f"Loaded {len(rows)} memories from database into retriever")
+    except Exception as e:
+        logger.error(f"Failed to load memories from DB: {e}")
 
 
 # ---------------------------------------------------------------------------

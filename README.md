@@ -7,6 +7,7 @@
     <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL 16">
     <img src="https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white" alt="Docker">
     <img src="https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
+    <img src="https://img.shields.io/badge/Qdrant-optional-FF6B6B?logo=qdrant&logoColor=white" alt="Qdrant">
   </p>
 </p>
 
@@ -27,13 +28,17 @@ Most AI memory systems are just vector stores with a retrieval step. Vex Memory 
 | **🔻 Memory Decay** | Exponential forgetting curves with 30-day half-life. Frequently accessed memories resist decay. Importance scores adjust automatically over time. |
 | **🤖 Auto-Extraction** | NLP pipeline (spaCy NER + pattern matching) extracts decisions, events, facts, and learnings from raw conversation text — no LLM needed. |
 | **🔍 Deduplication** | Embedding-based similarity detection (cosine > 0.85) prevents redundant memories. Near-duplicates are merged, preserving the richer content. |
-| **😴 Consolidation** | "Sleep cycle" engine clusters semantically similar memories, creates summaries, and lowers importance of originals. Topic-based consolidation groups by entity. |
+| **😴 Sleep Consolidation** | "Sleep cycle" engine clusters semantically similar memories, creates summaries, and lowers importance of originals. Topic-based consolidation groups by entity. Runs on a configurable cron schedule. |
 | **🕸️ Graph Relationships** | Apache AGE property graph for memory traversal. Auto-links similar memories (cosine > 0.7). Manual relationship types: CAUSED_BY, PART_OF, RELATED_TO, PRECEDED, CONTRADICTS, SUPPORTS. |
 | **📊 Dashboard** | Real-time web dashboard showing memory stats, types, emotions, and recent activity at `localhost:8000/dashboard`. |
 | **💭 Emotional Tagging** | Keyword-based sentiment analysis tags memories with dominant emotions (joy, pride, frustration, excitement, concern, relief, curiosity, satisfaction). |
-| **🎯 Context Endpoints** | Purpose-built endpoints for agent integration: session startup context, conversation context with history, and recent-memories summary. |
+| **🎯 Smart Startup Recall** | Session-start endpoint pulls relevant context from graph + vector search based on the user's first message, so agents wake up with context. |
 | **📈 Feedback Loops** | Track which memories are actually *used*, *ignored*, or *corrected*. Importance scores adjust based on observed usefulness over time. |
 | **⏰ Temporal Reasoning** | Natural language date parsing ("last Tuesday", "2 weeks ago", "since January"). Timeline queries and change-since endpoints. |
+| **💾 Pre-Compaction Dump** | Script to flush important context to the graph DB before LLM context window compaction, preventing memory loss during long sessions. |
+| **🔎 Semantic Search (Hybrid)** | Combines pgvector cosine similarity with keyword matching for best-of-both-worlds retrieval. Optional Qdrant integration for dedicated vector search at scale. |
+| **⚡ Contradiction Detection** | Automatically identifies memories that conflict with each other via CONTRADICTS graph edges, helping agents resolve inconsistencies. |
+| **🎯 Importance Decay** | Memories that aren't accessed gradually lose importance score over time, keeping the most relevant context surfaced. |
 
 ## 🏗️ Architecture
 
@@ -50,7 +55,30 @@ Most AI memory systems are just vector stores with a retrieval step. Vex Memory 
 │  (embeddings)   │     │  • Feedback      │     │  │  (graph)   │  │
 │  all-minilm     │     │  • Dashboard     │     │  └────────────┘  │
 └─────────────────┘     └──────────────────┘     └──────────────────┘
+                                │ (optional)
+                                ▼
+                        ┌──────────────────┐
+                        │     Qdrant       │
+                        │  (vector search) │
+                        │  :6333 / :6334   │
+                        │  Hybrid search   │
+                        └──────────────────┘
 ```
+
+### Hybrid pgvector + Qdrant (Optional)
+
+By default, Vex Memory uses **pgvector** for all embedding storage and similarity search — no extra services needed. For large-scale deployments (100K+ memories) or if you want dedicated vector search infrastructure, you can enable **Qdrant** as a secondary vector store:
+
+```bash
+# Enable Qdrant in .env
+QDRANT_ENABLED=true
+QDRANT_URL=http://localhost:6333
+
+# Add Qdrant to your docker-compose override
+docker compose --profile qdrant up -d
+```
+
+When Qdrant is enabled, memories are dual-written to both pgvector and Qdrant. Queries use Qdrant for vector search and PostgreSQL for graph traversal and filtering, combining the best of both worlds.
 
 ## 🚀 Quick Start
 
@@ -247,6 +275,9 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `AUTO_EXTRACT_ENABLED` | `false` | Enable auto-extraction on ingest |
 | `AUTO_EXTRACT_THRESHOLD` | `0.5` | Minimum score for auto-extracted memories |
 | `VEX_ENV` | `docker` | Environment identifier |
+| `QDRANT_ENABLED` | `false` | Enable Qdrant as secondary vector store |
+| `QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
+| `QDRANT_COLLECTION` | `vex_memories` | Qdrant collection name |
 
 ## 🔌 Built For
 

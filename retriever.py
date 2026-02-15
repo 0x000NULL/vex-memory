@@ -15,7 +15,7 @@ import re
 import json
 import logging
 import math
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import List, Dict, Optional, Tuple, Set, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum
@@ -606,7 +606,7 @@ class MemoryRetriever:
         
         # Recency factor (more recent is slightly better)
         if memory.event_time:
-            days_old = (datetime.now() - memory.event_time).days
+            days_old = (datetime.now(timezone.utc) - memory.event_time).days
             recency_factor = math.exp(-days_old / 60.0)  # 60-day half-life
             score += recency_factor * 0.1
         
@@ -685,7 +685,7 @@ class MemoryRetriever:
 
     def get_recent_important_memories(self, days: int = 7, max_count: int = 10) -> List[MemoryNode]:
         """Get recent important memories for proactive context."""
-        cutoff_date = datetime.now() - timedelta(days=days)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
         
         recent_memories = []
         for memory in self.memories:
