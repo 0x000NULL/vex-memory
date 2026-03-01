@@ -40,6 +40,7 @@ Most AI memory systems are just vector stores with a retrieval step. Vex Memory 
 | **⚡ Contradiction Detection** | Automatically identifies memories that conflict with each other via CONTRADICTS graph edges, helping agents resolve inconsistencies. |
 | **🎯 Importance Decay** | Memories that aren't accessed gradually lose importance score over time, keeping the most relevant context surfaced. |
 | **🎲 Confidence Scoring** | Distinguishes verified facts (0.9+) from likely assumptions (0.6-0.8) to uncertain inferences (0.3-0.5). Auto-tagged based on linguistic markers ("is" vs "probably" vs "maybe"). Affects retrieval ranking. |
+| **🧮 Smart Context Prioritization** | **NEW in v1.1.0!** Token-aware memory selection with multi-factor scoring (similarity, importance, recency). Enforces strict token budgets, uses diversity filtering to avoid redundancy, and guarantees optimal context relevance. See [PRIORITIZATION.md](PRIORITIZATION.md) for details. |
 
 ## 🏗️ Architecture
 
