@@ -324,18 +324,19 @@ def test_get_agent_memories_function(clean_db):
                 (%s, 'semantic', 'Important memory', %s, 'test-namespace', 0.9),
                 (%s, 'semantic', 'Less important memory', %s, 'test-namespace', 0.3)
         """, (mem1_id, ns_id, mem2_id, ns_id))
-        
-        # Grant read access to reader
-        access_control.grant_access(ns_id, reader, 'read', owner)
-        
-        # Query as reader
+    
+    # Grant read access to reader (after transaction is committed)
+    access_control.grant_access(ns_id, reader, 'read', owner)
+    
+    # Query as reader
+    with db.get_cursor() as cur:
         cur.execute("SELECT * FROM get_agent_memories(%s, %s, 10)", (reader, ns_id))
         rows = cur.fetchall()
-        
-        assert len(rows) == 2
-        # Should be ordered by importance
-        assert rows[0]['content'] == 'Important memory'
-        assert rows[1]['content'] == 'Less important memory'
+    
+    assert len(rows) == 2
+    # Should be ordered by importance
+    assert rows[0]['content'] == 'Important memory'
+    assert rows[1]['content'] == 'Less important memory'
 
 
 if __name__ == '__main__':
