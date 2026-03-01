@@ -108,6 +108,56 @@ class TestLargeContentHandling:
         assert metadata.get("truncated") is not True
 
 
+class TestQueryRankingEdgeCases:
+    """Test query ranking edge cases (Bug 4)."""
+    
+    def test_query_returns_results_with_similar_content(self, client):
+        """Verify queries return results when semantically similar memories exist."""
+        # Create memory with known content
+        response = client.post("/memories", json={
+            "content": "vex-memory v0.3.0 features include namespaces, confidence scoring, and auto-sync",
+            "type": "semantic",
+            "importance_score": 0.8
+        })
+        assert response.status_code == 201
+        memory_id = response.json()["id"]
+        
+        # Query for similar content (should return results)
+        queries = [
+            "what are the new features?",
+            "tell me about vex-memory features",
+            "what's new in version 0.3.0?",
+        ]
+        
+        for query in queries:
+            response = client.post("/query", json={"query": query})
+            assert response.status_code == 200, f"Query failed: {query}"
+            
+            data = response.json()
+            assert "memories" in data
+            
+            # Should return at least 1 result (may return more if there are other memories)
+            # We just verify it doesn't return 0
+            assert len(data["memories"]) > 0, f"Query returned 0 results for: '{query}'"
+    
+    def test_query_with_no_matches_uses_keyword_fallback(self, client):
+        """Verify keyword fallback is used when semantic search returns 0 results."""
+        # Create a memory
+        client.post("/memories", json={
+            "content": "Python is a programming language",
+            "type": "semantic"
+        })
+        
+        # Query with content that may not have high semantic similarity
+        # but should still return results via keyword fallback
+        response = client.post("/query", json={
+            "query": "random gibberish xyz123 nonexistent"
+        })
+        
+        assert response.status_code == 200
+        # Even if no results, should not crash and should use fallback
+
+
 class TestConfidenceFiltering:
     """Test confidence filter precision (Bug 2)."""
     

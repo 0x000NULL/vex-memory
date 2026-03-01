@@ -714,7 +714,9 @@ def query_memories(body: QueryRequest):
                 )
                 rows = cur.fetchall()
                 for row in rows:
-                    if row.get("similarity", 0) >= 0.3:  # min threshold
+                    # Lower threshold to 0.2 to catch more edge cases
+                    # (was 0.3, reduced to prevent 0-result queries)
+                    if row.get("similarity", 0) >= 0.2:
                         semantic_results.append(row)
         except Exception as e:
             logger.warning(f"Semantic DB search failed: {e}")
@@ -743,16 +745,24 @@ def query_memories(body: QueryRequest):
                 break
             trimmed.append(m)
 
-        # Track access for returned memories
-        for m in trimmed:
-            decay.update_access(m.id)
+        # If semantic search returned 0 results, log and fall back to keyword
+        if not trimmed:
+            logger.warning(
+                f"Semantic search returned 0 results for query: '{body.query[:100]}...' "
+                f"(found {len(semantic_results)} candidates but none met token budget). "
+                f"Falling back to keyword search."
+            )
+        else:
+            # Track access for returned memories
+            for m in trimmed:
+                decay.update_access(m.id)
 
-        return QueryResponse(
-            query=body.query,
-            memories=trimmed,
-            total_tokens=total_chars // 4,
-            metadata={"search_type": "semantic", "total_candidates": len(semantic_results)},
-        )
+            return QueryResponse(
+                query=body.query,
+                memories=trimmed,
+                total_tokens=total_chars // 4,
+                metadata={"search_type": "semantic", "total_candidates": len(semantic_results)},
+            )
 
     # Fall back to keyword-based retrieval
     retriever = _get_retriever()
@@ -768,6 +778,13 @@ def query_memories(body: QueryRequest):
             raise HTTPException(400, f"Invalid strategy: {body.strategy}")
 
     ctx = retriever.query(qc)
+
+    # Log warning if no results found
+    if not ctx.memories:
+        logger.warning(
+            f"Query returned 0 results for: '{body.query[:100]}...' "
+            f"(search_type: keyword, max_tokens: {body.max_tokens})"
+        )
 
     # Track access for returned memories
     for m in ctx.memories:
