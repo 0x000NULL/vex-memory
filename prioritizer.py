@@ -435,7 +435,8 @@ class MemoryPrioritizer:
         memories: List[Dict[str, Any]],
         token_budget: int,
         lambda_param: float = 0.7,
-        min_score: Optional[float] = None
+        min_score: Optional[float] = None,
+        max_candidates: int = 200
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """Select memories using Maximal Marginal Relevance (MMR).
         
@@ -443,11 +444,15 @@ class MemoryPrioritizer:
         memories that are relevant to the query but different from
         already-selected memories.
         
+        Note: For performance, MMR is limited to max_candidates (default 200).
+        Use regular prioritization for larger datasets.
+        
         Args:
             memories: List of memory dictionaries
             token_budget: Maximum tokens allowed
             lambda_param: Balance between relevance (1.0) and diversity (0.0)
             min_score: Optional minimum score threshold
+            max_candidates: Maximum memories to consider (default: 200)
             
         Returns:
             Tuple of (selected_memories, metadata)
@@ -462,7 +467,7 @@ class MemoryPrioritizer:
                 "method": "mmr"
             }
         
-        # Score all memories
+        # Score all memories and take top candidates for performance
         scored = []
         for memory in memories:
             try:
@@ -472,6 +477,12 @@ class MemoryPrioritizer:
             except Exception as e:
                 logger.warning(f"Failed to score memory {memory.get('id')}: {e}")
                 continue
+        
+        # Sort by score and limit to max_candidates for performance
+        scored.sort(key=lambda x: x.score, reverse=True)
+        if len(scored) > max_candidates:
+            logger.info(f"MMR: Limiting to top {max_candidates} candidates (from {len(scored)})")
+            scored = scored[:max_candidates]
         
         if not scored:
             return [], {

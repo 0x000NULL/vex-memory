@@ -180,6 +180,8 @@ For each iteration:
     Select memory with highest mmr_score
 ```
 
+**Performance Note:** MMR has O(n²) complexity due to pairwise similarity calculations. For optimal performance with large datasets (>200 candidates), the implementation automatically limits to the top 200 scored candidates before applying MMR. For datasets with <200 memories, use standard prioritization which is faster.
+
 ### Type and Namespace Priorities
 
 Configure priority multipliers for different memory types and namespaces:
