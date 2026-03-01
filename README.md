@@ -260,6 +260,117 @@ curl "http://localhost:8000/entities?limit=50"
 
 Visit `http://localhost:8000/dashboard` to see a real-time overview of your memory system including memory counts, type distribution, emotional breakdown, and recent activity.
 
+## 🔄 Auto-Sync File Watcher
+
+Vex Memory includes a file watcher daemon that monitors markdown files in `~/.openclaw/workspace/memory/` and automatically syncs new content to the graph database in real-time.
+
+### Features
+
+- **Real-time monitoring** — Detects changes to `.md` files within 1 second
+- **Intelligent parsing** — Extracts headers, bullet points, and paragraphs as individual memories
+- **Type inference** — Automatically categorizes memories as `semantic`, `episodic`, or `procedural` based on content
+- **Importance scoring** — Analyzes keywords to assign appropriate importance scores
+- **Deduplication** — Leverages the API's built-in duplicate detection to prevent redundant entries
+- **Crash recovery** — Tracks sync state per file to avoid re-syncing content after restarts
+- **Graceful error handling** — Logs failures without crashing, auto-restarts via systemd
+
+### Installation
+
+The file watcher is installed as a systemd user service that runs on boot:
+
+```bash
+# Install watchdog dependency
+pip install watchdog
+
+# Enable and start the service
+systemctl --user enable --now vex-memory-sync.service
+
+# Check status
+systemctl --user status vex-memory-sync.service
+
+# View logs
+journalctl --user -u vex-memory-sync.service -f
+```
+
+### How It Works
+
+1. **File Detection** — Monitors `~/.openclaw/workspace/memory/*.md` for modifications
+2. **Debouncing** — Waits 500ms after last change to avoid partial writes
+3. **Content Hashing** — Calculates SHA-256 hash to detect actual changes vs. metadata updates
+4. **Parsing** — Splits markdown into sections based on headers (`#`) and bullet points (`-`, `*`, `•`)
+5. **Metadata Enrichment** — Adds source file name and section context to each memory
+6. **API Sync** — POSTs memories to `/memories` endpoint with appropriate type and importance
+7. **State Tracking** — Saves sync state to `~/.config/vex-memory/sync-state.json`
+
+### Example Workflow
+
+```markdown
+# ~/.openclaw/workspace/memory/2026-02-28.md
+
+## Daily Log
+
+- **09:00 AM** - Decided to migrate vex-memory to PostgreSQL 16
+- **10:30 AM** - Deployed new API endpoint for graph traversal
+- **14:00 PM** - User reported bug in consolidation logic
+
+## Important Notes
+
+- Always run `docker compose down` before schema migrations
+- Production API uses 384-dim embeddings from all-minilm model
+```
+
+**Result:** Each bullet point is automatically extracted, classified (episodic for events, procedural for processes), scored for importance, and synced to the graph database within 1 second of saving the file.
+
+### Configuration
+
+Environment variables (set in systemd service or `.env`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VEX_MEMORY_API` | `http://localhost:8000` | API endpoint URL |
+
+### Sync State
+
+The watcher maintains state at `~/.config/vex-memory/sync-state.json`:
+
+```json
+{
+  "/home/user/.openclaw/workspace/memory/2026-02-28.md": {
+    "content_hash": "a3f2e8...",
+    "line_count": 12,
+    "last_sync": "2026-02-28T20:10:38.728Z"
+  }
+}
+```
+
+This prevents re-syncing unchanged files and enables crash recovery.
+
+### Logs
+
+- **systemd journal:** `journalctl --user -u vex-memory-sync.service -f`
+- **File log:** `/tmp/vex-memory-sync.log`
+
+### Service Management
+
+```bash
+# Start
+systemctl --user start vex-memory-sync.service
+
+# Stop
+systemctl --user stop vex-memory-sync.service
+
+# Restart
+systemctl --user restart vex-memory-sync.service
+
+# Disable (stop running on boot)
+systemctl --user disable vex-memory-sync.service
+
+# View resource usage
+systemctl --user status vex-memory-sync.service
+```
+
+The service is resource-limited to 256MB RAM and 20% CPU to prevent runaway usage.
+
 ## ⚙️ Configuration
 
 All configuration is via environment variables. See [`.env.example`](.env.example) for the full list.
