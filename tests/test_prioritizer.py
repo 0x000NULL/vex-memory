@@ -19,13 +19,14 @@ class TestScoringWeights:
     """Test ScoringWeights dataclass."""
     
     def test_default_weights(self):
-        """Test default weight values."""
+        """Test default weight values (v1.2.0 with entity_coverage)."""
         weights = ScoringWeights()
         
         assert weights.similarity == 0.4
         assert weights.importance == 0.3
         assert weights.recency == 0.2
-        assert weights.diversity == 0.1
+        assert weights.diversity == 0.05
+        assert weights.entity_coverage == 0.05
     
     def test_custom_weights(self):
         """Test custom weight values."""
@@ -33,7 +34,8 @@ class TestScoringWeights:
             similarity=0.5,
             importance=0.3,
             recency=0.15,
-            diversity=0.05
+            diversity=0.03,
+            entity_coverage=0.02
         )
         
         assert weights.similarity == 0.5
@@ -45,11 +47,12 @@ class TestScoringWeights:
             similarity=0.5,
             importance=0.5,
             recency=0.5,
-            diversity=0.5
+            diversity=0.5,
+            entity_coverage=0.5
         )
         
         # Should be normalized to sum to 1.0
-        total = weights.similarity + weights.importance + weights.recency + weights.diversity
+        total = weights.similarity + weights.importance + weights.recency + weights.diversity + weights.entity_coverage
         assert abs(total - 1.0) < 0.01
 
 
@@ -105,11 +108,11 @@ class TestMemoryPrioritizer:
     
     def test_initialization_custom_weights(self, estimator):
         """Test initialization with custom weights."""
-        weights = ScoringWeights(similarity=0.5, importance=0.5, recency=0.0, diversity=0.0)
+        weights = ScoringWeights(similarity=0.5, importance=0.45, recency=0.0, diversity=0.0, entity_coverage=0.05)
         prioritizer = MemoryPrioritizer(token_estimator=estimator, weights=weights)
         
         assert prioritizer.weights.similarity == 0.5
-        assert prioritizer.weights.importance == 0.5
+        assert prioritizer.weights.importance == 0.45
     
     def test_prioritize_basic(self, prioritizer, sample_memories):
         """Test basic prioritization."""
@@ -310,12 +313,12 @@ class TestMemoryPrioritizer:
     
     def test_update_weights(self, prioritizer):
         """Test weight updates."""
-        new_weights = ScoringWeights(similarity=0.6, importance=0.4, recency=0.0, diversity=0.0)
+        new_weights = ScoringWeights(similarity=0.6, importance=0.35, recency=0.0, diversity=0.0, entity_coverage=0.05)
         
         prioritizer.update_weights(new_weights)
         
         assert prioritizer.weights.similarity == 0.6
-        assert prioritizer.weights.importance == 0.4
+        assert prioritizer.weights.importance == 0.35
     
     def test_get_weights(self, prioritizer):
         """Test getting current weights."""

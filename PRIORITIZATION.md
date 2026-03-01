@@ -17,6 +17,16 @@ Instead of simple concatenation, vex-memory now intelligently selects and priori
 - **Graceful Truncation**: Handles oversized memories intelligently
 - **High Performance**: <100ms for 1000 memories
 
+### Phase 2: Advanced Diversity + Priorities (v1.2.0) ✅
+
+- **MMR Algorithm**: Maximal Marginal Relevance for better diversity control
+- **Entity Extraction**: Automatic extraction of people, organizations, locations, dates, etc.
+- **Entity Coverage**: Track and prioritize entity coverage in selected memories
+- **Type Priorities**: Configurable priorities for memory types (episodic=1.0, semantic=0.8, procedural=0.6, meta=0.4)
+- **Namespace Priorities**: Configurable priorities for namespaces (main=1.0, shared=0.7, isolated=0.3)
+- **Weight Presets**: Pre-configured weight sets for common use cases
+- **Weight Tuning**: Grid search and benchmarking tools for optimization
+
 ## API Usage
 
 ### Endpoint: `POST /api/memories/prioritized-context`
@@ -132,6 +142,173 @@ Memories with similarity > threshold to already-selected memories are filtered o
      - Check diversity threshold (skip if too similar)
      - Add to selection
 5. **Return**: Selected memories + metadata
+
+## Phase 2: MMR and Entity Coverage (v1.2.0)
+
+### MMR Endpoint: `POST /api/memories/prioritized-mmr`
+
+Maximal Marginal Relevance provides better diversity control by iteratively selecting memories that balance relevance and novelty.
+
+Request:
+```json
+{
+  "query": "project updates",
+  "token_budget": 2000,
+  "model": "gpt-4",
+  "weights": {
+    "lambda": 0.7
+  }
+}
+```
+
+Parameters:
+- `lambda` (default: 0.7): Balance between relevance (1.0) and diversity (0.0)
+  - 1.0 = Pure relevance (identical to greedy)
+  - 0.7 = Good balance (recommended)
+  - 0.5 = Equal weight to relevance and diversity
+  - 0.0 = Maximum diversity (may sacrifice relevance)
+
+### MMR Algorithm
+
+```
+For each iteration:
+  If first memory:
+    Select highest relevance score
+  Else:
+    For each candidate:
+      mmr_score = λ * relevance - (1-λ) * max_similarity_to_selected
+    Select memory with highest mmr_score
+```
+
+### Type and Namespace Priorities
+
+Configure priority multipliers for different memory types and namespaces:
+
+```python
+from prioritizer import PriorityMappings
+
+# Custom priorities
+priorities = PriorityMappings(
+    type_priorities={
+        "episodic": 1.0,    # Highest priority
+        "semantic": 0.8,
+        "procedural": 0.6,
+        "meta": 0.4         # Lowest priority
+    },
+    namespace_priorities={
+        "main": 1.0,        # Highest priority
+        "shared": 0.7,
+        "isolated": 0.3     # Lowest priority
+    }
+)
+
+prioritizer = MemoryPrioritizer(priority_mappings=priorities)
+```
+
+Priority multipliers are applied to the base score:
+```
+final_score = base_score * ((type_priority + namespace_priority) / 2)
+```
+
+### Weight Presets
+
+Get optimized weight configurations for common use cases:
+
+```bash
+# Get available presets
+curl http://localhost:8000/api/weights/presets
+
+# Get recommended weights for a use case
+curl http://localhost:8000/api/weights/recommend?use_case=entity_focused
+```
+
+Available presets:
+- **balanced**: All factors weighted equally (default)
+- **relevance_focused**: Prioritizes similarity and importance
+- **recency_focused**: Prioritizes recent memories
+- **diversity_focused**: Maximizes variety and entity coverage
+- **entity_focused**: Prioritizes entity coverage
+- **importance_focused**: Prioritizes memory importance
+
+Example response:
+```json
+{
+  "name": "Entity Focused",
+  "description": "Prioritizes entity coverage",
+  "weights": {
+    "similarity": 0.3,
+    "importance": 0.25,
+    "recency": 0.1,
+    "diversity": 0.1,
+    "entity_coverage": 0.25
+  }
+}
+```
+
+### Entity Extraction
+
+Automatically extract entities from memory content:
+
+```python
+from entity_extractor import EntityExtractor
+
+extractor = EntityExtractor()
+
+# Extract entities
+result = extractor.extract("John Smith works at Microsoft in Seattle.")
+
+# Returns:
+{
+    "entities": [
+        {"text": "John Smith", "type": "PERSON", "priority": 0.8},
+        {"text": "Microsoft", "type": "ORG", "priority": 0.9},
+        {"text": "Seattle", "type": "GPE", "priority": 0.7}
+    ],
+    "unique_entities": {"john smith", "microsoft", "seattle"},
+    "entity_counts": Counter({"PERSON": 1, "ORG": 1, "GPE": 1})
+}
+```
+
+Supported entity types:
+- **PERSON**: People, including fictional
+- **ORG**: Organizations, companies, agencies
+- **GPE**: Geopolitical entities (countries, cities, states)
+- **DATE**: Absolute or relative dates
+- **EMAIL**: Email addresses (regex)
+- **URL**: Web URLs (regex)
+- **PHONE**: Phone numbers (regex)
+
+### Weight Tuning
+
+Use the weight tuner to find optimal configurations:
+
+```python
+from weight_tuner import WeightTuner
+
+tuner = WeightTuner()
+
+# Compare all presets
+results = tuner.compare_presets(
+    memories=test_memories,
+    token_budget=2000,
+    ground_truth=["mem-1", "mem-2", "mem-3"]
+)
+
+# Grid search for best weights
+results = tuner.grid_search(
+    memories=test_memories,
+    token_budget=2000,
+    similarity_range=(0.2, 0.6, 0.1),
+    importance_range=(0.2, 0.5, 0.1),
+    recency_range=(0.1, 0.4, 0.1),
+    top_k=10
+)
+
+# Best configuration
+best = results[0]
+print(f"Score: {best.score:.3f}")
+print(f"Weights: {best.config.weights}")
+```
 
 ## Token Estimation
 

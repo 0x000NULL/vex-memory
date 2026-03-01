@@ -32,7 +32,8 @@ from temporal import parse_temporal_expression, temporal_search as temporal_sear
 import feedback
 import access_control
 from token_estimator import TokenEstimator
-from prioritizer import MemoryPrioritizer, ScoringWeights
+from prioritizer import MemoryPrioritizer, ScoringWeights, PriorityMappings
+from weight_tuner import WeightTuner, WeightConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -359,6 +360,29 @@ def stats():
         memory_types=raw.get("memory_types", {}),
         entity_types={},
     )
+
+
+@app.get("/api/weights/presets")
+def get_weight_presets():
+    """
+    Get available weight presets for different use cases.
+    
+    Returns list of preset configurations with descriptions.
+    """
+    tuner = WeightTuner()
+    return {"presets": tuner.list_presets()}
+
+
+@app.get("/api/weights/recommend")
+def recommend_weights(use_case: str = Query(default="balanced", description="Use case: balanced, relevance_focused, recency_focused, diversity_focused, entity_focused, importance_focused")):
+    """
+    Get recommended weights for a specific use case.
+    
+    Returns weight configuration optimized for the given use case.
+    """
+    tuner = WeightTuner()
+    config = tuner.recommend_weights(use_case)
+    return config.to_dict()
 
 
 @app.post("/memories", response_model=MemoryOut, status_code=201)

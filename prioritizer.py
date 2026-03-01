@@ -48,6 +48,30 @@ class ScoringWeights:
 
 
 @dataclass
+class PriorityMappings:
+    """Priority mappings for memory types and namespaces."""
+    type_priorities: Dict[str, float] = field(default_factory=lambda: {
+        "episodic": 1.0,
+        "semantic": 0.8,
+        "procedural": 0.6,
+        "meta": 0.4
+    })
+    namespace_priorities: Dict[str, float] = field(default_factory=lambda: {
+        "main": 1.0,
+        "shared": 0.7,
+        "isolated": 0.3
+    })
+    
+    def get_type_priority(self, memory_type: str) -> float:
+        """Get priority for a memory type (default 0.5 for unknown)."""
+        return self.type_priorities.get(memory_type, 0.5)
+    
+    def get_namespace_priority(self, namespace: str) -> float:
+        """Get priority for a namespace (default 0.5 for unknown)."""
+        return self.namespace_priorities.get(namespace, 0.5)
+
+
+@dataclass
 class MemoryScore:
     """Score result for a single memory."""
     memory_id: str
@@ -64,7 +88,8 @@ class MemoryPrioritizer:
         self,
         token_estimator: Optional[TokenEstimator] = None,
         weights: Optional[ScoringWeights] = None,
-        recency_half_life_days: float = 30.0
+        recency_half_life_days: float = 30.0,
+        priority_mappings: Optional[PriorityMappings] = None
     ):
         """Initialize prioritizer.
         
@@ -72,11 +97,13 @@ class MemoryPrioritizer:
             token_estimator: Token estimator instance (creates default if None)
             weights: Scoring weights (uses defaults if None)
             recency_half_life_days: Half-life for recency decay in days
+            priority_mappings: Type and namespace priority mappings (uses defaults if None)
         """
         self.token_estimator = token_estimator or TokenEstimator()
         self.weights = weights or ScoringWeights()
         self.recency_half_life_days = recency_half_life_days
         self.recency_decay_rate = math.log(2) / recency_half_life_days
+        self.priority_mappings = priority_mappings or PriorityMappings()
     
     def prioritize(
         self,
@@ -211,12 +238,23 @@ class MemoryPrioritizer:
         # Factor 3: Recency (exponential decay)
         factors["recency"] = self._calculate_recency(memory)
         
+        # Factor 4: Type priority (v1.2.0)
+        factors["type_priority"] = self._type_priority(memory)
+        
+        # Factor 5: Namespace priority (v1.2.0)
+        factors["namespace_priority"] = self._namespace_priority(memory)
+        
         # Composite score (weighted sum)
-        score = (
+        # Type and namespace priorities act as multipliers on the base score
+        base_score = (
             self.weights.similarity * factors["similarity"] +
             self.weights.importance * factors["importance"] +
             self.weights.recency * factors["recency"]
         )
+        
+        # Apply priority multipliers (average of type and namespace)
+        priority_multiplier = (factors["type_priority"] + factors["namespace_priority"]) / 2.0
+        score = base_score * priority_multiplier
         
         # Estimate tokens
         token_estimate = self.token_estimator.estimate_memory(memory)
@@ -228,6 +266,40 @@ class MemoryPrioritizer:
             factors=factors,
             memory=memory
         )
+    
+    def _type_priority(self, memory: Dict[str, Any]) -> float:
+        """Calculate type priority score.
+        
+        Args:
+            memory: Memory dictionary with optional 'type' field
+            
+        Returns:
+            Type priority score (0.4-1.0, default 0.5)
+        """
+        memory_type = memory.get("type", "").lower()
+        if not memory_type:
+            return 0.5  # Neutral priority for untyped memories
+        
+        return self.priority_mappings.get_type_priority(memory_type)
+    
+    def _namespace_priority(self, memory: Dict[str, Any]) -> float:
+        """Calculate namespace priority score.
+        
+        Args:
+            memory: Memory dictionary with optional 'namespace' field
+            
+        Returns:
+            Namespace priority score (0.3-1.0, default 0.5)
+        """
+        namespace = memory.get("namespace", "").lower()
+        if not namespace:
+            # Check metadata for namespace
+            namespace = memory.get("metadata", {}).get("namespace", "").lower()
+        
+        if not namespace:
+            return 0.5  # Neutral priority for memories without namespace
+        
+        return self.priority_mappings.get_namespace_priority(namespace)
     
     def _calculate_recency(self, memory: Dict[str, Any]) -> float:
         """Calculate recency score with exponential decay.
@@ -340,6 +412,23 @@ class MemoryPrioritizer:
             Current ScoringWeights
         """
         return self.weights
+    
+    def update_priority_mappings(self, priority_mappings: PriorityMappings):
+        """Update type and namespace priority mappings.
+        
+        Args:
+            priority_mappings: New priority mappings
+        """
+        self.priority_mappings = priority_mappings
+        logger.info(f"Updated priority mappings: type={priority_mappings.type_priorities}, namespace={priority_mappings.namespace_priorities}")
+    
+    def get_priority_mappings(self) -> PriorityMappings:
+        """Get current priority mappings.
+        
+        Returns:
+            Current PriorityMappings
+        """
+        return self.priority_mappings
     
     def prioritize_mmr(
         self,
