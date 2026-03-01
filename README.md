@@ -94,6 +94,50 @@ That's it. API is at `http://localhost:8000`, dashboard at `http://localhost:800
 
 > **Note:** Ollama runs on the host for GPU access. Install it separately: `curl -fsSL https://ollama.com/install.sh | sh && ollama pull all-minilm`. The system degrades gracefully without it (keyword search instead of semantic search).
 
+### Docker Networking Setup
+
+If using Docker and UFW firewall is enabled, Ollama needs firewall access:
+
+```bash
+./scripts/setup-ollama-firewall.sh
+```
+
+This script automatically detects the Docker bridge network and adds a UFW rule to allow the vex-memory container to access Ollama on port 11434.
+
+### Verify Installation
+
+After `docker compose up -d`, run health checks:
+
+```bash
+# 1. API health
+curl http://localhost:8000/health
+# Expected: {"status":"ok","database":true,"memory_count":X}
+
+# 2. Ollama connectivity
+curl http://localhost:11434/api/version
+# Expected: {"version":"..."}
+
+# 3. Database connectivity
+docker exec vex-memory-db-1 psql -U vex -d vex_memory -c "SELECT COUNT(*) FROM memories;"
+# Expected: count | X
+
+# 4. Create test memory
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{"content":"Test memory"}'
+# Expected: 200/201 response in <500ms
+```
+
+### Troubleshooting
+
+**Issue:** API timeouts when creating memories  
+**Cause:** Ollama not accessible from Docker container  
+**Fix:** Run `./scripts/setup-ollama-firewall.sh`
+
+**Issue:** "Connection refused" to Ollama  
+**Cause:** Ollama service not running  
+**Fix:** `sudo systemctl start ollama`
+
 ## 🤝 Multi-Agent Memory Sharing
 
 Vex Memory supports **namespace-based memory sharing** for multi-agent systems. This eliminates cold starts when spawning sub-agents by granting them read/write access to specific memory namespaces.
