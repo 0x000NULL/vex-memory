@@ -1010,6 +1010,148 @@ async def get_prioritized_context(request: PrioritizedContextRequest):
         raise HTTPException(status_code=500, detail=f"Failed to generate prioritized context: {str(e)}")
 
 
+@app.post("/api/memories/prioritized-mmr", response_model=PrioritizedContextResponse)
+async def get_prioritized_context_mmr(request: PrioritizedContextRequest):
+    """
+    Get memories using Maximal Marginal Relevance (MMR) for better diversity.
+    
+    MMR balances relevance and diversity by iteratively selecting memories that
+    are relevant to the query but different from already-selected memories.
+    
+    Use lambda parameter via weights dict: {"lambda": 0.7} (0=max diversity, 1=max relevance)
+    """
+    try:
+        # Initialize components
+        token_estimator = TokenEstimator(model=request.model)
+        
+        if request.weights:
+            weights = ScoringWeights(**{k: v for k, v in request.weights.items() if k != "lambda"})
+        else:
+            weights = ScoringWeights()
+        
+        prioritizer = MemoryPrioritizer(token_estimator=token_estimator, weights=weights)
+        
+        # Extract lambda parameter
+        lambda_param = request.weights.get("lambda", 0.7) if request.weights else 0.7
+        
+        # Get candidate memories (same as prioritized-context)
+        query_embedding = await _get_embedding(request.query)
+        
+        if not query_embedding:
+            retriever = _get_retriever()
+            qc = QueryContext(query=request.query, max_tokens=request.token_budget)
+            ctx = retriever.query(qc)
+            
+            candidate_memories = [
+                {
+                    "id": m.id,
+                    "content": m.content,
+                    "importance_score": m.importance_score,
+                    "event_time": m.event_time,
+                    "type": m.type.value,
+                    "similarity_score": 0.5,
+                    "metadata": {}
+                }
+                for m in ctx.memories[:request.limit]
+            ]
+        else:
+            with db.get_cursor() as cur:
+                sql = """
+                    SELECT 
+                        id::text, 
+                        type::text, 
+                        content, 
+                        importance_score, 
+                        decay_factor,
+                        access_count, 
+                        source, 
+                        event_time, 
+                        created_at, 
+                        namespace_id,
+                        metadata,
+                        1.0 - (embedding <=> %s::vector) AS similarity_score
+                    FROM memory_nodes
+                    WHERE embedding IS NOT NULL
+                """
+                
+                params = [str(query_embedding)]
+                
+                if request.namespace:
+                    try:
+                        import uuid as _uuid_module
+                        namespace_uuid = str(_uuid_module.UUID(request.namespace))
+                        sql += " AND namespace_id = %s"
+                        params.append(namespace_uuid)
+                    except (ValueError, AttributeError):
+                        logger.warning(f"Invalid namespace UUID format: {request.namespace}")
+                
+                sql += " ORDER BY embedding <=> %s::vector LIMIT %s"
+                params.extend([str(query_embedding), request.limit])
+                
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+                
+                candidate_memories = [
+                    {
+                        "id": row["id"],
+                        "content": row["content"],
+                        "importance_score": row.get("importance_score", 0.5),
+                        "event_time": row.get("event_time"),
+                        "type": row.get("type", "semantic"),
+                        "similarity_score": row.get("similarity_score", 0.0),
+                        "source": row.get("source"),
+                        "created_at": row.get("created_at"),
+                        "namespace_id": row.get("namespace_id"),
+                        "metadata": row.get("metadata", {}),
+                        "decay_factor": row.get("decay_factor", 1.0),
+                        "access_count": row.get("access_count", 0)
+                    }
+                    for row in rows
+                ]
+        
+        # Use MMR prioritization
+        selected_memories, metadata = prioritizer.prioritize_mmr(
+            memories=candidate_memories,
+            token_budget=request.token_budget,
+            lambda_param=lambda_param,
+            min_score=request.min_score
+        )
+        
+        # Track access
+        for memory in selected_memories:
+            decay.update_access(memory["id"])
+        
+        # Convert to MemoryOut format
+        memory_outputs = [
+            MemoryOut(
+                id=m["id"],
+                type=m.get("type", "semantic"),
+                content=m["content"],
+                importance_score=m.get("importance_score", 0.5),
+                decay_factor=m.get("decay_factor", 1.0),
+                access_count=m.get("access_count", 0),
+                source=m.get("source", ""),
+                event_time=m.get("event_time"),
+                created_at=m.get("created_at"),
+                namespace_id=m.get("namespace_id"),
+                metadata=m.get("metadata", {})
+            )
+            for m in selected_memories
+        ]
+        
+        metadata["search_type"] = "mmr_semantic" if query_embedding else "mmr_keyword"
+        metadata["model"] = request.model
+        
+        return PrioritizedContextResponse(
+            memories=memory_outputs,
+            metadata=metadata
+        )
+        
+    except Exception as e:
+        logger.error(f"MMR prioritization error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to generate MMR context: {str(e)}")
+
+
 @app.post("/extract")
 def extract_from_text(content: str = Query(..., min_length=10)):
     """Extract structured memories from raw text."""

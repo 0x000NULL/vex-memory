@@ -5,8 +5,13 @@ Memory Prioritizer Module
 Intelligent memory prioritization with multi-factor scoring and token budgets.
 Implements greedy selection with diversity filtering for optimal context assembly.
 
+Version 1.2.0 adds:
+- MMR (Maximal Marginal Relevance) for better diversity
+- Entity coverage tracking
+- Type and namespace priority weighting
+
 Author: vex-memory team
-Version: 1.0.0
+Version: 1.2.0
 """
 
 from typing import List, Dict, Optional, Tuple, Any
@@ -26,11 +31,12 @@ class ScoringWeights:
     similarity: float = 0.4
     importance: float = 0.3
     recency: float = 0.2
-    diversity: float = 0.1
+    diversity: float = 0.05
+    entity_coverage: float = 0.05  # New in v1.2.0
     
     def __post_init__(self):
         """Validate weights sum to approximately 1.0."""
-        total = self.similarity + self.importance + self.recency + self.diversity
+        total = self.similarity + self.importance + self.recency + self.diversity + self.entity_coverage
         if not (0.99 <= total <= 1.01):
             logger.warning(f"Weights sum to {total:.3f}, not 1.0. Normalizing...")
             # Normalize
@@ -38,6 +44,7 @@ class ScoringWeights:
             self.importance /= total
             self.recency /= total
             self.diversity /= total
+            self.entity_coverage /= total
 
 
 @dataclass
@@ -333,6 +340,300 @@ class MemoryPrioritizer:
             Current ScoringWeights
         """
         return self.weights
+    
+    def prioritize_mmr(
+        self,
+        memories: List[Dict[str, Any]],
+        token_budget: int,
+        lambda_param: float = 0.7,
+        min_score: Optional[float] = None
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Select memories using Maximal Marginal Relevance (MMR).
+        
+        MMR balances relevance and diversity by iteratively selecting
+        memories that are relevant to the query but different from
+        already-selected memories.
+        
+        Args:
+            memories: List of memory dictionaries
+            token_budget: Maximum tokens allowed
+            lambda_param: Balance between relevance (1.0) and diversity (0.0)
+            min_score: Optional minimum score threshold
+            
+        Returns:
+            Tuple of (selected_memories, metadata)
+        """
+        if not memories:
+            return [], {
+                "total_tokens": 0,
+                "budget": token_budget,
+                "utilization": 0.0,
+                "memories_selected": 0,
+                "memories_available": 0,
+                "method": "mmr"
+            }
+        
+        # Score all memories
+        scored = []
+        for memory in memories:
+            try:
+                score_obj = self._score_memory(memory)
+                if min_score is None or score_obj.score >= min_score:
+                    scored.append(score_obj)
+            except Exception as e:
+                logger.warning(f"Failed to score memory {memory.get('id')}: {e}")
+                continue
+        
+        if not scored:
+            return [], {
+                "total_tokens": 0,
+                "budget": token_budget,
+                "utilization": 0.0,
+                "memories_selected": 0,
+                "memories_available": len(memories),
+                "method": "mmr"
+            }
+        
+        # MMR selection
+        selected = []
+        remaining = scored.copy()
+        total_tokens = 0
+        
+        while remaining and total_tokens < token_budget:
+            if not selected:
+                # First memory: highest relevance score
+                best = max(remaining, key=lambda x: x.score)
+            else:
+                # Subsequent memories: MMR score
+                best = None
+                best_mmr_score = float('-inf')
+                
+                for candidate in remaining:
+                    # Relevance component
+                    relevance = candidate.score
+                    
+                    # Diversity component: max similarity to selected
+                    max_sim_to_selected = max(
+                        self._jaccard_similarity(
+                            candidate.memory.get("content", ""),
+                            sel.memory.get("content", "")
+                        )
+                        for sel in selected
+                    )
+                    
+                    # MMR score: λ * relevance - (1-λ) * max_similarity
+                    mmr_score = lambda_param * relevance - (1 - lambda_param) * max_sim_to_selected
+                    
+                    if mmr_score > best_mmr_score:
+                        best_mmr_score = mmr_score
+                        best = candidate
+            
+            if best is None:
+                break
+            
+            # Check token budget
+            if total_tokens + best.token_count > token_budget:
+                # Try truncation for high-value memories
+                if best.score > 0.7 and not selected:
+                    available = token_budget - total_tokens
+                    if available > 50:
+                        truncated = self.token_estimator.truncate_to_budget(
+                            best.memory["content"],
+                            available - 10
+                        )
+                        memory_copy = best.memory.copy()
+                        memory_copy["content"] = truncated.text
+                        memory_copy["_truncated"] = True
+                        memory_copy["_score"] = best.score
+                        memory_copy["_score_factors"] = best.factors
+                        
+                        selected.append(best)
+                        total_tokens += truncated.token_count
+                break
+            
+            # Add to selected
+            selected.append(best)
+            remaining.remove(best)
+            total_tokens += best.token_count
+        
+        # Convert to memory dictionaries
+        selected_memories = []
+        for score_obj in selected:
+            memory = score_obj.memory.copy()
+            memory["_score"] = score_obj.score
+            memory["_score_factors"] = score_obj.factors
+            selected_memories.append(memory)
+        
+        # Metadata
+        metadata = {
+            "total_tokens": total_tokens,
+            "budget": token_budget,
+            "utilization": total_tokens / token_budget if token_budget > 0 else 0.0,
+            "memories_selected": len(selected_memories),
+            "memories_available": len(memories),
+            "method": "mmr",
+            "lambda": lambda_param,
+            "average_score": sum(s.score for s in selected) / len(selected) if selected else 0.0,
+            "weights": {
+                "similarity": self.weights.similarity,
+                "importance": self.weights.importance,
+                "recency": self.weights.recency,
+                "diversity": self.weights.diversity,
+                "entity_coverage": self.weights.entity_coverage
+            }
+        }
+        
+        return selected_memories, metadata
+    
+    def prioritize_with_entity_coverage(
+        self,
+        memories: List[Dict[str, Any]],
+        target_entities: set,
+        token_budget: int,
+        entity_boost: float = 0.2,
+        diversity_threshold: float = 0.7,
+        min_score: Optional[float] = None
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Prioritize memories with entity coverage tracking.
+        
+        Gives bonus scores to memories that cover important entities.
+        
+        Args:
+            memories: List of memory dictionaries (with '_entities' field)
+            target_entities: Set of important entities to cover
+            token_budget: Maximum tokens
+            entity_boost: Maximum boost for entity coverage (default: 0.2)
+            diversity_threshold: Jaccard threshold for diversity
+            min_score: Optional minimum score threshold
+            
+        Returns:
+            Tuple of (selected_memories, metadata)
+        """
+        if not memories or not target_entities:
+            # Fall back to regular prioritization
+            return self.prioritize(
+                memories,
+                token_budget,
+                diversity_threshold=diversity_threshold,
+                min_score=min_score
+            )
+        
+        # Track covered entities
+        covered_entities = set()
+        
+        # Score memories with entity coverage boost
+        scored = []
+        for memory in memories:
+            try:
+                base_score_obj = self._score_memory(memory)
+                
+                # Calculate entity coverage boost
+                memory_entities = set(memory.get("_entities", set()))
+                uncovered = target_entities - covered_entities
+                overlap = memory_entities & uncovered
+                
+                coverage_boost = 0.0
+                if uncovered:
+                    coverage_boost = entity_boost * (len(overlap) / len(uncovered))
+                
+                # Adjusted score
+                adjusted_score = base_score_obj.score + coverage_boost
+                
+                if min_score is None or adjusted_score >= min_score:
+                    score_obj = MemoryScore(
+                        memory_id=base_score_obj.memory_id,
+                        score=adjusted_score,
+                        token_count=base_score_obj.token_count,
+                        factors={
+                            **base_score_obj.factors,
+                            "entity_coverage": coverage_boost
+                        },
+                        memory=memory
+                    )
+                    scored.append(score_obj)
+            except Exception as e:
+                logger.warning(f"Failed to score memory {memory.get('id')}: {e}")
+                continue
+        
+        # Sort by adjusted score
+        scored.sort(key=lambda x: x.score, reverse=True)
+        
+        # Greedy selection with diversity and coverage tracking
+        selected = []
+        selected_contents = []
+        total_tokens = 0
+        diversity_filtered_count = 0
+        
+        for score_obj in scored:
+            memory = score_obj.memory
+            
+            # Check token budget
+            if total_tokens + score_obj.token_count > token_budget:
+                if score_obj.score > 0.7 and not selected:
+                    available = token_budget - total_tokens
+                    if available > 50:
+                        truncated = self.token_estimator.truncate_to_budget(
+                            memory["content"],
+                            available - 10
+                        )
+                        memory_copy = memory.copy()
+                        memory_copy["content"] = truncated.text
+                        memory_copy["_truncated"] = True
+                        
+                        selected.append(memory_copy)
+                        total_tokens += truncated.token_count
+                        
+                        # Update covered entities
+                        covered_entities.update(memory.get("_entities", set()))
+                continue
+            
+            # Check diversity
+            if selected and self._is_too_similar(
+                memory,
+                selected_contents,
+                diversity_threshold
+            ):
+                diversity_filtered_count += 1
+                continue
+            
+            # Add to selected
+            selected.append(memory)
+            selected_contents.append(memory.get("content", ""))
+            total_tokens += score_obj.token_count
+            
+            # Track covered entities
+            covered_entities.update(memory.get("_entities", set()))
+            
+            # Add score info
+            memory["_score"] = score_obj.score
+            memory["_score_factors"] = score_obj.factors
+        
+        # Calculate coverage
+        coverage = len(covered_entities & target_entities) / len(target_entities) if target_entities else 1.0
+        
+        # Metadata
+        metadata = {
+            "total_tokens": total_tokens,
+            "budget": token_budget,
+            "utilization": total_tokens / token_budget if token_budget > 0 else 0.0,
+            "memories_selected": len(selected),
+            "memories_available": len(memories),
+            "diversity_filtered": diversity_filtered_count,
+            "entity_coverage": coverage,
+            "entities_covered": len(covered_entities & target_entities),
+            "entities_target": len(target_entities),
+            "average_score": sum(s.score for s in scored[:len(selected)]) / len(selected) if selected else 0.0,
+            "method": "entity_coverage",
+            "weights": {
+                "similarity": self.weights.similarity,
+                "importance": self.weights.importance,
+                "recency": self.weights.recency,
+                "diversity": self.weights.diversity,
+                "entity_coverage": self.weights.entity_coverage
+            }
+        }
+        
+        return selected, metadata
 
 
 # Convenience function
