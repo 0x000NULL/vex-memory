@@ -94,6 +94,40 @@ That's it. API is at `http://localhost:8000`, dashboard at `http://localhost:800
 
 > **Note:** Ollama runs on the host for GPU access. Install it separately: `curl -fsSL https://ollama.com/install.sh | sh && ollama pull all-minilm`. The system degrades gracefully without it (keyword search instead of semantic search).
 
+### Python SDK
+
+For Python developers, use the official [vex-memory-sdk](https://github.com/0x000NULL/vex-memory-sdk):
+
+```bash
+pip install vex-memory
+```
+
+```python
+from vex_memory import MemoryClient
+
+# Initialize
+client = MemoryClient("http://localhost:8000")
+
+# Store memories
+memory = client.store("Met with Alice to discuss Q2 roadmap", importance=0.8)
+
+# Search
+results = client.search("What meetings did I have?")
+
+# Build context for LLM
+context = client.build_context("project status", max_tokens=2000)
+```
+
+**Features:**
+- ✅ Simple, Pythonic API
+- ✅ Type-safe Pydantic models
+- ✅ Auto-retry with circuit breaker
+- ✅ Session & namespace support
+- ✅ Bulk operations
+- ✅ Full documentation
+
+See the [SDK documentation](https://github.com/0x000NULL/vex-memory-sdk) for advanced usage (resource API, streaming, context managers).
+
 ### Docker Networking Setup
 
 If using Docker and UFW firewall is enabled, Ollama needs firewall access:
