@@ -480,7 +480,8 @@ def list_memories(
                     filters.append("importance_score >= %s")
                     params.append(min_importance)
                 if min_confidence is not None:
-                    filters.append("confidence_score >= %s")
+                    # Use ROUND to avoid floating-point precision issues with REAL type
+                    filters.append("ROUND(confidence_score::numeric, 2) >= %s")
                     params.append(min_confidence)
                 if namespace_id:
                     filters.append("namespace_id = %s")
@@ -521,8 +522,9 @@ def list_memories(
     mems = [m for m in mems if m.importance_score >= min_importance]
     
     # Note: in-memory memories may not have confidence_score
+    # Round to 2 decimal places to match DB precision and avoid floating-point issues
     if min_confidence is not None:
-        mems = [m for m in mems if getattr(m, 'confidence_score', 0.8) >= min_confidence]
+        mems = [m for m in mems if round(getattr(m, 'confidence_score', 0.8), 2) >= min_confidence]
     
     mems = sorted(mems, key=lambda m: m.importance_score, reverse=True)
 

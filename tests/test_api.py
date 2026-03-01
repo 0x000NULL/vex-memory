@@ -66,6 +66,57 @@ class TestQuery:
         assert r.status_code == 400
 
 
+class TestConfidenceFiltering:
+    """Test confidence filter precision (Bug 2)."""
+    
+    def test_confidence_filter_exact_threshold(self, client):
+        """Verify min_confidence filter uses exact threshold (no fuzzy ±0.02 range)."""
+        # Create memories with specific confidence scores
+        # Below threshold
+        r1 = client.post("/memories", json={
+            "content": "Low confidence memory",
+            "confidence_score": 0.599,
+            "importance_score": 0.5
+        })
+        assert r1.status_code == 201
+        low_id = r1.json()["id"]
+        
+        # Exactly at threshold
+        r2 = client.post("/memories", json={
+            "content": "Exact threshold memory",
+            "confidence_score": 0.6,
+            "importance_score": 0.5
+        })
+        assert r2.status_code == 201
+        exact_id = r2.json()["id"]
+        
+        # Above threshold
+        r3 = client.post("/memories", json={
+            "content": "High confidence memory",
+            "confidence_score": 0.601,
+            "importance_score": 0.5
+        })
+        assert r3.status_code == 201
+        high_id = r3.json()["id"]
+        
+        # Query with min_confidence=0.6
+        r = client.get("/memories?min_confidence=0.6&limit=100")
+        assert r.status_code == 200
+        memories = r.json()
+        
+        # Extract IDs and confidence scores
+        returned_ids = {m["id"] for m in memories}
+        
+        # Verify exact threshold behavior
+        assert low_id not in returned_ids, "Memory with confidence=0.599 should NOT be returned"
+        assert exact_id in returned_ids, "Memory with confidence=0.6 should be returned"
+        assert high_id in returned_ids, "Memory with confidence=0.601 should be returned"
+        
+        # Verify all returned memories meet threshold
+        for m in memories:
+            assert m["confidence_score"] >= 0.6, f"Memory {m['id']} has confidence {m['confidence_score']} < 0.6"
+
+
 class TestEntities:
     def test_list_entities(self, client):
         r = client.get("/entities")
