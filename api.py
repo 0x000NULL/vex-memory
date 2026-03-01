@@ -73,11 +73,20 @@ async def dashboard_js():
 
 async def _get_embedding(text: str) -> Optional[List[float]]:
     """Get embedding from Ollama. Returns None on failure (non-blocking)."""
+    # Truncate if needed (Ollama model input limit)
+    MAX_EMBED_LENGTH = 8000
+    original_length = len(text)
+    if original_length > MAX_EMBED_LENGTH:
+        logger.warning(
+            f"Content truncated from {original_length} to {MAX_EMBED_LENGTH} chars for embedding generation"
+        )
+        text = text[:MAX_EMBED_LENGTH]
+    
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(f"{OLLAMA_URL}/api/embeddings", json={
                 "model": EMBED_MODEL,
-                "prompt": text[:8000],  # limit input
+                "prompt": text,
             })
             if r.status_code == 200:
                 return r.json().get("embedding")
@@ -89,11 +98,20 @@ async def _get_embedding(text: str) -> Optional[List[float]]:
 
 def _get_embedding_sync(text: str) -> Optional[List[float]]:
     """Synchronous embedding helper for non-async contexts."""
+    # Truncate if needed (Ollama model input limit)
+    MAX_EMBED_LENGTH = 8000
+    original_length = len(text)
+    if original_length > MAX_EMBED_LENGTH:
+        logger.warning(
+            f"Content truncated from {original_length} to {MAX_EMBED_LENGTH} chars for embedding generation"
+        )
+        text = text[:MAX_EMBED_LENGTH]
+    
     try:
         with httpx.Client(timeout=30.0) as client:
             r = client.post(f"{OLLAMA_URL}/api/embeddings", json={
                 "model": EMBED_MODEL,
-                "prompt": text[:8000],
+                "prompt": text,
             })
             if r.status_code == 200:
                 return r.json().get("embedding")
@@ -335,32 +353,59 @@ def create_memory(body: MemoryCreate):
         duplicates = find_duplicates(body.content, threshold=0.85)
         if duplicates:
             top = duplicates[0]
-            if top["similarity"] > 0.9:
-                # High similarity: merge instead of creating new
-                logger.info(f"Duplicate detected (similarity={top['similarity']:.3f}), merging with {top['id']}")
-                # Update existing memory with higher importance if needed
+            # Merge any duplicate above threshold (was >0.9, now >0.85 to catch more cases)
+            if top["similarity"] > 0.85:
+                logger.info(
+                    f"Duplicate detected (similarity={top['similarity']:.3f}), "
+                    f"merging with existing memory {top['id']}"
+                )
+                # Update existing memory: keep higher importance, longer content, merge metadata
                 import json as _json
+                
+                # Calculate merged confidence (average of old and new)
+                from confidence import assign_confidence
+                new_confidence = body.confidence_score
+                if new_confidence is None:
+                    metadata_for_scoring = body.metadata.copy()
+                    metadata_for_scoring["importance_score"] = body.importance_score
+                    metadata_for_scoring["source"] = body.source
+                    new_confidence = assign_confidence(body.content, body.type, metadata_for_scoring)
+                
                 with db.get_cursor() as cur:
+                    # Get existing memory's confidence and access count
+                    cur.execute(
+                        "SELECT confidence_score, access_count FROM memory_nodes WHERE id = %s",
+                        (top["id"],)
+                    )
+                    existing = cur.fetchone()
+                    if existing:
+                        avg_confidence = (existing["confidence_score"] + new_confidence) / 2.0
+                        new_access_count = existing["access_count"] + 1
+                    else:
+                        avg_confidence = new_confidence
+                        new_access_count = 1
+                    
                     cur.execute(
                         """UPDATE memory_nodes
                            SET importance_score = GREATEST(importance_score, %s),
+                               confidence_score = %s,
+                               access_count = %s,
                                content = CASE WHEN LENGTH(content) >= LENGTH(%s) THEN content ELSE %s END,
                                metadata = metadata || %s::jsonb
                            WHERE id = %s
                            RETURNING id, type::text, content, importance_score, confidence_score, decay_factor,
-                                     access_count, source, event_time, created_at, metadata""",
-                        (body.importance_score, body.content, body.content,
-                         _json.dumps({"merge_source": body.source or "api"}),
+                                     access_count, source, event_time, created_at, namespace_id::text, metadata""",
+                        (body.importance_score, avg_confidence, new_access_count,
+                         body.content, body.content,
+                         _json.dumps({"merge_source": body.source or "api", "merged_at": datetime.now().isoformat()}),
                          top["id"]),
                     )
                     row = cur.fetchone()
                     if row:
+                        logger.info(f"Successfully merged into memory {top['id']}")
                         return MemoryOut(**row)
-            elif top["similarity"] > 0.85:
-                logger.warning(
-                    f"Near-duplicate detected (similarity={top['similarity']:.3f}) "
-                    f"with memory {top['id']}. Inserting anyway."
-                )
+                    else:
+                        logger.warning(f"Merge UPDATE returned no rows for {top['id']}, creating new memory instead")
     except Exception as e:
         logger.warning(f"Duplicate check failed, proceeding with insert: {e}")
 
@@ -374,6 +419,13 @@ def create_memory(body: MemoryCreate):
         confidence = assign_confidence(body.content, body.type, metadata_for_scoring)
     else:
         confidence = body.confidence_score
+
+    # Track truncation for large content
+    MAX_EMBED_LENGTH = 8000
+    content_metadata = body.metadata.copy()
+    if len(body.content) > MAX_EMBED_LENGTH:
+        content_metadata["truncated"] = True
+        content_metadata["original_length"] = len(body.content)
 
     # Try to generate embedding (best-effort, non-blocking on failure)
     embedding = _get_embedding_sync(body.content)
@@ -392,7 +444,7 @@ def create_memory(body: MemoryCreate):
                     (
                         mem_id, body.type, body.content, body.importance_score, confidence,
                         body.source, body.event_time, body.namespace_id,
-                        _json.dumps(body.metadata),
+                        _json.dumps(content_metadata),
                         str(embedding),
                     ),
                 )
@@ -406,7 +458,7 @@ def create_memory(body: MemoryCreate):
                     (
                         mem_id, body.type, body.content, body.importance_score, confidence,
                         body.source, body.event_time, body.namespace_id,
-                        _json.dumps(body.metadata),
+                        _json.dumps(content_metadata),
                     ),
                 )
             row = cur.fetchone()
@@ -419,7 +471,7 @@ def create_memory(body: MemoryCreate):
                 importance_score=body.importance_score,
                 source=body.source,
                 event_time=body.event_time,
-                metadata=body.metadata,
+                metadata=content_metadata,
             )
             retriever = _get_retriever()
             retriever.memories.append(node)
@@ -437,7 +489,7 @@ def create_memory(body: MemoryCreate):
         importance_score=body.importance_score,
         source=body.source,
         event_time=body.event_time,
-        metadata=body.metadata,
+        metadata=content_metadata,
     )
     retriever = _get_retriever()
     retriever.memories.append(node)
@@ -480,7 +532,8 @@ def list_memories(
                     filters.append("importance_score >= %s")
                     params.append(min_importance)
                 if min_confidence is not None:
-                    filters.append("confidence_score >= %s")
+                    # Use ROUND to avoid floating-point precision issues with REAL type
+                    filters.append("ROUND(confidence_score::numeric, 2) >= %s")
                     params.append(min_confidence)
                 if namespace_id:
                     filters.append("namespace_id = %s")
@@ -521,8 +574,9 @@ def list_memories(
     mems = [m for m in mems if m.importance_score >= min_importance]
     
     # Note: in-memory memories may not have confidence_score
+    # Round to 2 decimal places to match DB precision and avoid floating-point issues
     if min_confidence is not None:
-        mems = [m for m in mems if getattr(m, 'confidence_score', 0.8) >= min_confidence]
+        mems = [m for m in mems if round(getattr(m, 'confidence_score', 0.8), 2) >= min_confidence]
     
     mems = sorted(mems, key=lambda m: m.importance_score, reverse=True)
 
@@ -687,7 +741,9 @@ def query_memories(body: QueryRequest):
                 )
                 rows = cur.fetchall()
                 for row in rows:
-                    if row.get("similarity", 0) >= 0.3:  # min threshold
+                    # Lower threshold to 0.2 to catch more edge cases
+                    # (was 0.3, reduced to prevent 0-result queries)
+                    if row.get("similarity", 0) >= 0.2:
                         semantic_results.append(row)
         except Exception as e:
             logger.warning(f"Semantic DB search failed: {e}")
@@ -716,16 +772,24 @@ def query_memories(body: QueryRequest):
                 break
             trimmed.append(m)
 
-        # Track access for returned memories
-        for m in trimmed:
-            decay.update_access(m.id)
+        # If semantic search returned 0 results, log and fall back to keyword
+        if not trimmed:
+            logger.warning(
+                f"Semantic search returned 0 results for query: '{body.query[:100]}...' "
+                f"(found {len(semantic_results)} candidates but none met token budget). "
+                f"Falling back to keyword search."
+            )
+        else:
+            # Track access for returned memories
+            for m in trimmed:
+                decay.update_access(m.id)
 
-        return QueryResponse(
-            query=body.query,
-            memories=trimmed,
-            total_tokens=total_chars // 4,
-            metadata={"search_type": "semantic", "total_candidates": len(semantic_results)},
-        )
+            return QueryResponse(
+                query=body.query,
+                memories=trimmed,
+                total_tokens=total_chars // 4,
+                metadata={"search_type": "semantic", "total_candidates": len(semantic_results)},
+            )
 
     # Fall back to keyword-based retrieval
     retriever = _get_retriever()
@@ -741,6 +805,13 @@ def query_memories(body: QueryRequest):
             raise HTTPException(400, f"Invalid strategy: {body.strategy}")
 
     ctx = retriever.query(qc)
+
+    # Log warning if no results found
+    if not ctx.memories:
+        logger.warning(
+            f"Query returned 0 results for: '{body.query[:100]}...' "
+            f"(search_type: keyword, max_tokens: {body.max_tokens})"
+        )
 
     # Track access for returned memories
     for m in ctx.memories:
