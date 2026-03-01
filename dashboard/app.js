@@ -183,6 +183,8 @@ function showInspector(mem) {
   el.classList.remove('hidden');
   const c = document.getElementById('inspector-content');
   const badgeClass = TYPE_BADGE_CLASS[mem.type] || '';
+  const confidence = mem.confidence_score !== undefined ? mem.confidence_score : 0.8;
+  const confidenceColor = confidence >= 0.8 ? '#00ff88' : confidence >= 0.6 ? '#ffdd59' : '#ff6b9d';
   c.innerHTML = `
     <h2>${escapeHtml(mem.id.slice(0, 8))}…</h2>
     <div class="field">
@@ -192,6 +194,10 @@ function showInspector(mem) {
     <div class="field">
       <div class="field-label">Importance</div>
       <div class="field-value" style="color:var(--accent);font-weight:600">${(mem.importance_score || 0).toFixed(2)}</div>
+    </div>
+    <div class="field">
+      <div class="field-label">Confidence</div>
+      <div class="field-value" style="color:${confidenceColor};font-weight:600">${confidence.toFixed(2)}</div>
     </div>
     <div class="field">
       <div class="field-label">Event Time</div>
@@ -500,12 +506,21 @@ async function doSearch(query) {
 // --- Stats ---
 function renderStats() {
   const nums = document.querySelector('#stat-totals .stat-numbers');
+  
+  // Calculate confidence stats
+  const confidenceScores = allMemories.map(m => m.confidence_score !== undefined ? m.confidence_score : 0.8);
+  const avgConfidence = confidenceScores.length > 0 
+    ? (confidenceScores.reduce((a, b) => a + b, 0) / confidenceScores.length).toFixed(2)
+    : '—';
+  
   nums.innerHTML = `
     <div class="stat-num"><div class="val">${stats.total_memories || allMemories.length}</div><div class="label">Memories</div></div>
     <div class="stat-num"><div class="val">${stats.total_entities || allEntities.length}</div><div class="label">Entities</div></div>
     <div class="stat-num"><div class="val">${Object.keys(stats.memory_types || {}).length}</div><div class="label">Types</div></div>
+    <div class="stat-num"><div class="val">${avgConfidence}</div><div class="label">Avg Confidence</div></div>
   `;
   renderDonut();
+  renderConfidenceChart();
   renderTimeChart();
   const recent = document.getElementById('recent-list');
   const sorted = [...allMemories].sort((a, b) => (b.event_time || '').localeCompare(a.event_time || '')).slice(0, 10);
@@ -538,6 +553,62 @@ function renderDonut() {
     .attr('transform', d => `translate(${arc.centroid(d)})`)
     .attr('text-anchor', 'middle').attr('fill', '#fff').attr('font-size', 11)
     .text(d => `${d.data.type} (${d.data.count})`);
+}
+
+function renderConfidenceChart() {
+  const svg = d3.select('#confidence-chart');
+  if (!svg.node()) return; // Chart element doesn't exist yet
+  svg.selectAll('*').remove();
+  const { width, height } = svg.node().getBoundingClientRect();
+  const margin = { top: 10, right: 10, bottom: 30, left: 40 };
+  const w = width - margin.left - margin.right;
+  const h = height - margin.top - margin.bottom;
+  const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+  
+  // Bin confidence scores
+  const bins = [
+    { range: '0.0-0.4', min: 0.0, max: 0.4, count: 0, color: '#ff6b9d' },
+    { range: '0.4-0.6', min: 0.4, max: 0.6, count: 0, color: '#ff9f43' },
+    { range: '0.6-0.8', min: 0.6, max: 0.8, count: 0, color: '#ffdd59' },
+    { range: '0.8-1.0', min: 0.8, max: 1.0, count: 0, color: '#00ff88' },
+  ];
+  
+  allMemories.forEach(m => {
+    const conf = m.confidence_score !== undefined ? m.confidence_score : 0.8;
+    for (const bin of bins) {
+      if (conf >= bin.min && conf < bin.max) {
+        bin.count++;
+        break;
+      }
+      if (conf === 1.0 && bin.max === 1.0) {
+        bin.count++;
+        break;
+      }
+    }
+  });
+  
+  const x = d3.scaleBand().domain(bins.map(b => b.range)).range([0, w]).padding(0.2);
+  const y = d3.scaleLinear().domain([0, d3.max(bins, b => b.count) || 1]).range([h, 0]);
+  
+  g.selectAll('rect').data(bins).join('rect')
+    .attr('x', d => x(d.range))
+    .attr('y', d => y(d.count))
+    .attr('width', x.bandwidth())
+    .attr('height', d => h - y(d.count))
+    .attr('fill', d => d.color)
+    .attr('opacity', 0.8);
+  
+  g.selectAll('text').data(bins).join('text')
+    .attr('x', d => x(d.range) + x.bandwidth() / 2)
+    .attr('y', d => y(d.count) - 5)
+    .attr('text-anchor', 'middle')
+    .attr('fill', '#ccc')
+    .attr('font-size', 11)
+    .text(d => d.count);
+  
+  g.append('g').attr('transform', `translate(0,${h})`)
+    .call(d3.axisBottom(x)).selectAll('text').attr('fill', '#999');
+  g.append('g').call(d3.axisLeft(y).ticks(5)).selectAll('text').attr('fill', '#999');
 }
 
 function renderTimeChart() {

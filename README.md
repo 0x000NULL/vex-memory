@@ -39,6 +39,7 @@ Most AI memory systems are just vector stores with a retrieval step. Vex Memory 
 | **🔎 Semantic Search (Hybrid)** | Combines pgvector cosine similarity with keyword matching for best-of-both-worlds retrieval. Optional Qdrant integration for dedicated vector search at scale. |
 | **⚡ Contradiction Detection** | Automatically identifies memories that conflict with each other via CONTRADICTS graph edges, helping agents resolve inconsistencies. |
 | **🎯 Importance Decay** | Memories that aren't accessed gradually lose importance score over time, keeping the most relevant context surfaced. |
+| **🎲 Confidence Scoring** | Distinguishes verified facts (0.9+) from likely assumptions (0.6-0.8) to uncertain inferences (0.3-0.5). Auto-tagged based on linguistic markers ("is" vs "probably" vs "maybe"). Affects retrieval ranking. |
 
 ## 🏗️ Architecture
 
@@ -92,6 +93,118 @@ docker compose up -d
 That's it. API is at `http://localhost:8000`, dashboard at `http://localhost:8000/dashboard`.
 
 > **Note:** Ollama runs on the host for GPU access. Install it separately: `curl -fsSL https://ollama.com/install.sh | sh && ollama pull all-minilm`. The system degrades gracefully without it (keyword search instead of semantic search).
+
+## 🤝 Multi-Agent Memory Sharing
+
+Vex Memory supports **namespace-based memory sharing** for multi-agent systems. This eliminates cold starts when spawning sub-agents by granting them read/write access to specific memory namespaces.
+
+### Use Cases
+
+- **Main agent + sub-agents**: Vex spawns sub-agents for tasks (e.g., FIMIL Phase 4 analysis). Sub-agents can access Vex's main namespace for context without duplicating memories.
+- **Team collaboration**: Multiple agents working on the same project can share a namespace while maintaining private namespaces for agent-specific context.
+- **Permission control**: Grant read-only access to observers, write access to collaborators.
+
+### Quick Example
+
+```bash
+# 1. Create a namespace (Vex's main namespace is auto-created as 'vex-main')
+curl -X POST http://localhost:8000/namespaces \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "project-alpha",
+    "owner_agent": "vex",
+    "access_policy": {"read": [], "write": []}
+  }'
+
+# 2. Grant sub-agent read access
+curl -X POST "http://localhost:8000/namespaces/{namespace_id}/grant?grantor_agent=vex" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "sub-agent-123", "permission": "read"}'
+
+# 3. Sub-agent queries memories with access control
+curl "http://localhost:8000/memories?agent_id=sub-agent-123&namespace_id={namespace_id}"
+
+# 4. Create a memory in the shared namespace
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Project alpha uses PostgreSQL 16 with pgvector",
+    "type": "semantic",
+    "namespace_id": "{namespace_id}"
+  }'
+```
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/namespaces` | POST | Create a new namespace |
+| `/namespaces` | GET | List all namespaces (optional `?agent_id=` filter) |
+| `/namespaces/{id}` | GET | Get namespace details |
+| `/namespaces/{id}/grant` | POST | Grant read/write access to an agent |
+| `/namespaces/{id}/revoke` | POST | Revoke access from an agent |
+| `/namespaces/{id}/permissions` | GET | Get full permission details |
+| `/memories?namespace_id={id}` | GET | List memories in a namespace |
+| `/memories?agent_id={id}` | GET | List all memories accessible to an agent |
+
+### Access Control
+
+- **Owner**: Namespace creator. Always has read/write access.
+- **Read permission**: Can query memories in the namespace.
+- **Write permission**: Can create/update memories in the namespace.
+- **Automatic backfill**: Existing memories are placed in the `vex-main` namespace owned by `vex`.
+
+### Database Functions
+
+```sql
+-- Check if agent can read a namespace
+SELECT can_read_namespace('agent-123', 'namespace-uuid');
+
+-- Check write access
+SELECT can_write_namespace('agent-123', 'namespace-uuid');
+
+-- Get all memories accessible to an agent
+SELECT * FROM get_agent_memories('agent-123', NULL, 100);
+
+-- Get memories from a specific namespace (with access check)
+SELECT * FROM get_agent_memories('agent-123', 'namespace-uuid', 50);
+```
+
+### Python Client Example
+
+```python
+import httpx
+
+class VexMemoryClient:
+    def __init__(self, base_url="http://localhost:8000", agent_id="my-agent"):
+        self.base_url = base_url
+        self.agent_id = agent_id
+    
+    def get_shared_context(self, namespace_id):
+        """Get all memories from a shared namespace."""
+        resp = httpx.get(
+            f"{self.base_url}/memories",
+            params={"agent_id": self.agent_id, "namespace_id": namespace_id, "limit": 100}
+        )
+        return resp.json()
+    
+    def create_shared_memory(self, content, namespace_id, importance=0.5):
+        """Create a memory in a shared namespace."""
+        resp = httpx.post(
+            f"{self.base_url}/memories",
+            json={
+                "content": content,
+                "type": "semantic",
+                "importance_score": importance,
+                "namespace_id": namespace_id
+            }
+        )
+        return resp.json()
+
+# Usage
+client = VexMemoryClient(agent_id="sub-agent-789")
+memories = client.get_shared_context(namespace_id="vex-main-namespace-uuid")
+```
 
 ## 📡 API Reference
 
@@ -370,6 +483,81 @@ systemctl --user status vex-memory-sync.service
 ```
 
 The service is resource-limited to 256MB RAM and 20% CPU to prevent runaway usage.
+
+## 🎲 Memory Confidence Scoring
+
+Vex Memory distinguishes between **verified facts** and **uncertain assumptions** using confidence scores (0.0-1.0):
+
+### Confidence Levels
+
+| Range | Label | Examples |
+|-------|-------|----------|
+| **0.9-1.0** | High Confidence | "Ethan's birthday is December 20", "Server deployed at 3:00 PM on 2026-02-15" |
+| **0.6-0.8** | Medium Confidence | "Ethan probably prefers dark mode", "The API seems to run on port 3000" |
+| **0.3-0.5** | Low Confidence | "Maybe the database is on localhost", "Could be a network issue" |
+
+### Auto-Tagging Logic
+
+Confidence is automatically assigned based on:
+
+1. **Linguistic Markers**
+   - High: `is`, `are`, `was`, `confirmed`, `verified`, `definitely`
+   - Medium: `probably`, `likely`, `seems`, `appears`, `usually`
+   - Low: `maybe`, `possibly`, `might`, `could be`, `uncertain`
+
+2. **Memory Type**
+   - Episodic (witnessed events): 0.9 base
+   - Semantic (facts): 0.8 base
+   - Procedural (how-tos): 0.8 base
+   - Emotional (interpretations): 0.7 base
+
+3. **Content Quality**
+   - Specific dates/numbers: +0.02 boost
+   - Proper nouns (3+): +0.03 boost
+   - Long detailed content (200+ chars): +0.05 boost
+   - Questions or conditionals: -0.2 penalty
+
+4. **Source Metadata**
+   - Verified sources: +0.05 boost
+   - High importance (0.9+): +0.05 boost
+   - Auto-extraction: -0.1 penalty
+
+### Retrieval Impact
+
+Confidence affects retrieval ranking via the formula:
+
+```
+score = (relevance × 0.4) + (importance × 0.3) + (confidence × 0.2) + (recency × 0.1)
+```
+
+**High-confidence memories are prioritized** when multiple memories match a query, ensuring agents get verified facts before uncertain inferences.
+
+### API Usage
+
+```bash
+# Create memory with explicit confidence
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Ethan'\''s birthday is December 20, 1995",
+    "type": "semantic",
+    "importance_score": 0.8,
+    "confidence_score": 0.95
+  }'
+
+# Query with minimum confidence filter
+curl "http://localhost:8000/memories?min_confidence=0.8&limit=20"
+
+# Backfill confidence scores for existing memories
+curl -X POST http://localhost:8000/memories/backfill-confidence
+```
+
+### Dashboard Visualization
+
+The dashboard shows:
+- **Confidence distribution chart** — histogram of memories across confidence ranges
+- **Avg confidence metric** — overall system confidence
+- **Per-memory confidence** — color-coded in inspector panel (green=high, yellow=medium, pink=low)
 
 ## ⚙️ Configuration
 

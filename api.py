@@ -30,6 +30,7 @@ from dedup import find_duplicates, merge_memories, deduplicate_all
 import decay
 from temporal import parse_temporal_expression, temporal_search as temporal_search_fn, get_timeline as temporal_get_timeline, whats_changed_since
 import feedback
+import access_control
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -109,8 +110,10 @@ class MemoryCreate(BaseModel):
     content: str
     type: str = "semantic"
     importance_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    confidence_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     source: str = "api"
     event_time: Optional[datetime] = None
+    namespace_id: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -119,11 +122,13 @@ class MemoryOut(BaseModel):
     type: str
     content: str
     importance_score: float
+    confidence_score: float = 0.8
     decay_factor: float = 1.0
     access_count: int = 0
     source: Optional[str] = None
     event_time: Optional[datetime] = None
     created_at: Optional[datetime] = None
+    namespace_id: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -206,6 +211,34 @@ class StatsResponse(BaseModel):
     total_entities: int
     memory_types: Dict[str, int]
     entity_types: Dict[str, int]
+
+
+# Namespace models
+class NamespaceCreate(BaseModel):
+    name: str
+    owner_agent: str
+    access_policy: Optional[Dict[str, List[str]]] = Field(default_factory=lambda: {"read": [], "write": []})
+
+
+class NamespaceOut(BaseModel):
+    namespace_id: str
+    name: str
+    owner_agent: Optional[str]
+    access_policy: Dict[str, List[str]]
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+
+class GrantAccessRequest(BaseModel):
+    agent_id: str
+    permission: str  # 'read' or 'write'
+
+
+class GrantAccessResponse(BaseModel):
+    namespace_id: str
+    name: str
+    owner_agent: Optional[str]
+    access_policy: Dict[str, List[str]]
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +327,8 @@ def stats():
 @app.post("/memories", response_model=MemoryOut, status_code=201)
 def create_memory(body: MemoryCreate):
     """Store a new memory (in-memory + DB if available). Auto-generates embedding via Ollama."""
+    
+    from confidence import assign_confidence
 
     # --- Duplicate detection ---
     try:
@@ -312,7 +347,7 @@ def create_memory(body: MemoryCreate):
                                content = CASE WHEN LENGTH(content) >= LENGTH(%s) THEN content ELSE %s END,
                                metadata = metadata || %s::jsonb
                            WHERE id = %s
-                           RETURNING id, type::text, content, importance_score, decay_factor,
+                           RETURNING id, type::text, content, importance_score, confidence_score, decay_factor,
                                      access_count, source, event_time, created_at, metadata""",
                         (body.importance_score, body.content, body.content,
                          _json.dumps({"merge_source": body.source or "api"}),
@@ -330,6 +365,15 @@ def create_memory(body: MemoryCreate):
         logger.warning(f"Duplicate check failed, proceeding with insert: {e}")
 
     mem_id = str(uuid.uuid4())
+    
+    # Auto-assign confidence score if not provided
+    if body.confidence_score is None:
+        metadata_for_scoring = body.metadata.copy()
+        metadata_for_scoring["importance_score"] = body.importance_score
+        metadata_for_scoring["source"] = body.source
+        confidence = assign_confidence(body.content, body.type, metadata_for_scoring)
+    else:
+        confidence = body.confidence_score
 
     # Try to generate embedding (best-effort, non-blocking on failure)
     embedding = _get_embedding_sync(body.content)
@@ -341,13 +385,13 @@ def create_memory(body: MemoryCreate):
             if embedding:
                 cur.execute(
                     """INSERT INTO memory_nodes
-                       (id, type, content, importance_score, source, event_time, metadata, embedding)
-                       VALUES (%s, %s::memory_type, %s, %s, %s, %s, %s::jsonb, %s::vector)
-                       RETURNING id, type::text, content, importance_score, decay_factor,
-                                 access_count, source, event_time, created_at, metadata""",
+                       (id, type, content, importance_score, confidence_score, source, event_time, namespace_id, metadata, embedding)
+                       VALUES (%s, %s::memory_type, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::vector)
+                       RETURNING id, type::text, content, importance_score, confidence_score, decay_factor,
+                                 access_count, source, event_time, created_at, namespace_id::text, metadata""",
                     (
-                        mem_id, body.type, body.content, body.importance_score,
-                        body.source, body.event_time,
+                        mem_id, body.type, body.content, body.importance_score, confidence,
+                        body.source, body.event_time, body.namespace_id,
                         _json.dumps(body.metadata),
                         str(embedding),
                     ),
@@ -355,13 +399,13 @@ def create_memory(body: MemoryCreate):
             else:
                 cur.execute(
                     """INSERT INTO memory_nodes
-                       (id, type, content, importance_score, source, event_time, metadata)
-                       VALUES (%s, %s::memory_type, %s, %s, %s, %s, %s::jsonb)
-                       RETURNING id, type::text, content, importance_score, decay_factor,
-                                 access_count, source, event_time, created_at, metadata""",
+                       (id, type, content, importance_score, confidence_score, source, event_time, namespace_id, metadata)
+                       VALUES (%s, %s::memory_type, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                       RETURNING id, type::text, content, importance_score, confidence_score, decay_factor,
+                                 access_count, source, event_time, created_at, namespace_id::text, metadata""",
                     (
-                        mem_id, body.type, body.content, body.importance_score,
-                        body.source, body.event_time,
+                        mem_id, body.type, body.content, body.importance_score, confidence,
+                        body.source, body.event_time, body.namespace_id,
                         _json.dumps(body.metadata),
                     ),
                 )
@@ -416,8 +460,54 @@ def list_memories(
     offset: int = Query(0, ge=0),
     type: Optional[str] = None,
     min_importance: float = Query(0.0, ge=0.0, le=1.0),
+    min_confidence: Optional[float] = Query(None, ge=0.0, le=1.0),
+    namespace_id: Optional[str] = Query(None, description="Filter by namespace"),
+    agent_id: Optional[str] = Query(None, description="Filter by agent access")
 ):
-    """List memories with optional filters."""
+    """List memories with optional filters including namespace and access control."""
+    
+    # Try DB query first for better filtering
+    if min_confidence is not None or type or min_importance > 0.0 or namespace_id or agent_id:
+        try:
+            with db.get_cursor() as cur:
+                filters = []
+                params = []
+                
+                if type:
+                    filters.append("type = %s::memory_type")
+                    params.append(type)
+                if min_importance > 0.0:
+                    filters.append("importance_score >= %s")
+                    params.append(min_importance)
+                if min_confidence is not None:
+                    filters.append("confidence_score >= %s")
+                    params.append(min_confidence)
+                if namespace_id:
+                    filters.append("namespace_id = %s")
+                    params.append(namespace_id)
+                
+                # Add access control filtering if agent_id is provided
+                if agent_id:
+                    filters.append("(namespace_id IS NULL OR can_read_namespace(%s, namespace_id))")
+                    params.append(agent_id)
+                
+                where_clause = " AND ".join(filters) if filters else "TRUE"
+                params.extend([limit, offset])
+                
+                cur.execute(f"""
+                    SELECT id::text, type::text, content, importance_score, confidence_score,
+                           decay_factor, access_count, source, event_time, created_at, namespace_id::text, metadata
+                    FROM memory_nodes
+                    WHERE {where_clause}
+                    ORDER BY importance_score DESC, confidence_score DESC
+                    LIMIT %s OFFSET %s
+                """, tuple(params))
+                rows = cur.fetchall()
+                return [MemoryOut(**r) for r in rows]
+        except Exception as e:
+            logger.warning(f"DB query failed, using in-memory fallback: {e}")
+    
+    # Fallback to in-memory
     retriever = _get_retriever()
     mems = retriever.memories
 
@@ -429,13 +519,20 @@ def list_memories(
             raise HTTPException(400, f"Invalid memory type: {type}")
 
     mems = [m for m in mems if m.importance_score >= min_importance]
+    
+    # Note: in-memory memories may not have confidence_score
+    if min_confidence is not None:
+        mems = [m for m in mems if getattr(m, 'confidence_score', 0.8) >= min_confidence]
+    
     mems = sorted(mems, key=lambda m: m.importance_score, reverse=True)
 
     page = mems[offset: offset + limit]
     return [
         MemoryOut(
             id=m.id, type=m.type.value, content=m.content,
-            importance_score=m.importance_score, source=m.source or "",
+            importance_score=m.importance_score, 
+            confidence_score=getattr(m, 'confidence_score', 0.8),
+            source=m.source or "",
             event_time=m.event_time,
         )
         for m in page
@@ -1326,6 +1423,14 @@ def api_bulk_tag_emotions():
     return result
 
 
+@app.post("/memories/backfill-confidence")
+def api_backfill_confidence():
+    """Backfill confidence scores for all memories using auto-tagging logic."""
+    from confidence import backfill_all_confidence_scores
+    result = backfill_all_confidence_scores()
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Graph Relationship Endpoints (Apache AGE)
 # ---------------------------------------------------------------------------
@@ -1395,3 +1500,130 @@ def graph_subgraph(entity: str):
     except Exception as e:
         logger.error(f"Graph subgraph failed: {e}")
         raise HTTPException(500, f"Subgraph query failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Namespace Endpoints (Multi-Agent Memory Sharing)
+# ---------------------------------------------------------------------------
+
+@app.post("/namespaces", response_model=NamespaceOut, status_code=201)
+def create_namespace(body: NamespaceCreate):
+    """Create a new memory namespace for multi-agent sharing."""
+    import json as _json
+    try:
+        namespace_id = str(uuid.uuid4())
+        with db.get_cursor() as cur:
+            cur.execute("""
+                INSERT INTO memory_namespaces (namespace_id, name, owner_agent, access_policy)
+                VALUES (%s, %s, %s, %s::jsonb)
+                RETURNING namespace_id::text, name, owner_agent, access_policy, created_at, updated_at
+            """, (namespace_id, body.name, body.owner_agent, _json.dumps(body.access_policy)))
+            row = cur.fetchone()
+            return NamespaceOut(**row)
+    except Exception as e:
+        logger.error(f"Failed to create namespace: {e}")
+        if "unique" in str(e).lower():
+            raise HTTPException(409, f"Namespace '{body.name}' already exists")
+        raise HTTPException(500, f"Failed to create namespace: {e}")
+
+
+@app.get("/namespaces", response_model=List[NamespaceOut])
+def list_namespaces(
+    agent_id: Optional[str] = Query(None, description="Filter by agent access"),
+    permission: str = Query("read", description="Filter by permission type: read or write")
+):
+    """List all namespaces, optionally filtered by agent access."""
+    try:
+        if agent_id:
+            # Use access control to get only accessible namespaces
+            namespaces = access_control.get_agent_namespaces(agent_id, permission)
+            return [NamespaceOut(**ns) for ns in namespaces]
+        else:
+            # Return all namespaces (admin view)
+            with db.get_cursor() as cur:
+                cur.execute("""
+                    SELECT namespace_id::text, name, owner_agent, access_policy, created_at, updated_at
+                    FROM memory_namespaces
+                    ORDER BY name
+                """)
+                rows = cur.fetchall()
+                return [NamespaceOut(**row) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to list namespaces: {e}")
+        raise HTTPException(500, f"Failed to list namespaces: {e}")
+
+
+@app.get("/namespaces/{namespace_id}", response_model=NamespaceOut)
+def get_namespace(namespace_id: str):
+    """Get namespace details."""
+    try:
+        with db.get_cursor() as cur:
+            cur.execute("""
+                SELECT namespace_id::text, name, owner_agent, access_policy, created_at, updated_at
+                FROM memory_namespaces
+                WHERE namespace_id = %s
+            """, (namespace_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, f"Namespace {namespace_id} not found")
+            return NamespaceOut(**row)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get namespace: {e}")
+        raise HTTPException(500, f"Failed to get namespace: {e}")
+
+
+@app.post("/namespaces/{namespace_id}/grant", response_model=GrantAccessResponse)
+def grant_namespace_access(
+    namespace_id: str,
+    body: GrantAccessRequest,
+    grantor_agent: str = Query(..., description="Agent performing the grant")
+):
+    """Grant an agent read or write access to a namespace."""
+    try:
+        result = access_control.grant_access(
+            namespace_id, body.agent_id, body.permission, grantor_agent
+        )
+        return GrantAccessResponse(**result)
+    except access_control.AccessDeniedError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error(f"Failed to grant access: {e}")
+        raise HTTPException(500, f"Failed to grant access: {e}")
+
+
+@app.post("/namespaces/{namespace_id}/revoke")
+def revoke_namespace_access(
+    namespace_id: str,
+    body: GrantAccessRequest,
+    revoker_agent: str = Query(..., description="Agent performing the revocation")
+):
+    """Revoke an agent's access to a namespace."""
+    try:
+        result = access_control.revoke_access(
+            namespace_id, body.agent_id, body.permission, revoker_agent
+        )
+        return result
+    except access_control.AccessDeniedError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error(f"Failed to revoke access: {e}")
+        raise HTTPException(500, f"Failed to revoke access: {e}")
+
+
+@app.get("/namespaces/{namespace_id}/permissions")
+def get_namespace_permissions(namespace_id: str):
+    """Get full permission details for a namespace."""
+    try:
+        result = access_control.get_namespace_permissions(namespace_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        logger.error(f"Failed to get permissions: {e}")
+        raise HTTPException(500, f"Failed to get permissions: {e}")

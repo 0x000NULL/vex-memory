@@ -594,17 +594,24 @@ class MemoryRetriever:
         return scored_memories
 
     def _calculate_relevance_score(self, memory: MemoryNode, query_context: QueryContext) -> float:
-        """Calculate relevance score for a memory given the query context."""
+        """Calculate relevance score for a memory given the query context.
+        
+        Ranking formula: score = (relevance * 0.4) + (importance * 0.3) + (confidence * 0.2) + (recency * 0.1)
+        """
         score = 0.0
         
-        # Base importance score
-        score += memory.importance_score * 0.3
-        
-        # Content similarity to query
+        # Content similarity to query (40% weight)
         content_sim = self._calculate_content_similarity(memory.content, query_context.query)
         score += content_sim * 0.4
         
-        # Recency factor (more recent is slightly better)
+        # Base importance score (30% weight)
+        score += memory.importance_score * 0.3
+        
+        # Confidence score (20% weight) - prefer verified facts
+        confidence = getattr(memory, 'confidence_score', 0.8)
+        score += confidence * 0.2
+        
+        # Recency factor (10% weight - more recent is slightly better)
         if memory.event_time:
             days_old = (datetime.now(timezone.utc) - memory.event_time).days
             recency_factor = math.exp(-days_old / 60.0)  # 60-day half-life
@@ -619,11 +626,12 @@ class MemoryRetriever:
         
         score += type_bonus
         
-        # Conversation context relevance
+        # Conversation context relevance - but reduce weight since we already have 100%
         if query_context.conversation_history:
             recent_context = ' '.join(query_context.conversation_history[-3:])  # Last 3 messages
             context_sim = self._calculate_content_similarity(memory.content, recent_context)
-            score += context_sim * 0.1
+            # This is a bonus, not part of main formula
+            score = score * 0.9 + context_sim * 0.1
         
         return min(1.0, score)
 

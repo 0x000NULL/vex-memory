@@ -52,6 +52,16 @@ CREATE TYPE entity_type AS ENUM (
 -- CORE MEMORY TABLES
 -- =============================================================================
 
+-- Memory namespaces for multi-agent access control
+CREATE TABLE memory_namespaces (
+    namespace_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name TEXT NOT NULL UNIQUE,
+    owner_agent TEXT,
+    access_policy JSONB DEFAULT '{"read": [], "write": []}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Main memory storage - each row is a discrete memory unit
 CREATE TABLE memory_nodes (
     -- Primary identification
@@ -76,10 +86,14 @@ CREATE TABLE memory_nodes (
     source TEXT, -- 'conversation', 'observation', 'decision', 'consolidation'
     source_file TEXT, -- original file this memory came from (for migration tracking)
     confidence FLOAT DEFAULT 1.0 CHECK (confidence BETWEEN 0.0 AND 1.0),
+    confidence_score REAL DEFAULT 0.8 CHECK (confidence_score >= 0.0 AND confidence_score <= 1.0),
     
     -- Context linking
     conversation_id UUID, -- link to conversation/session if applicable
     parent_memory_id UUID REFERENCES memory_nodes(id), -- if this memory elaborates on another
+    
+    -- Multi-agent namespace support
+    namespace_id UUID REFERENCES memory_namespaces(namespace_id),
     
     -- JSON metadata for flexible attributes
     metadata JSONB DEFAULT '{}',
@@ -236,6 +250,13 @@ CREATE INDEX consolidation_status_idx ON consolidation_runs (status, start_time)
 CREATE INDEX conflicts_unresolved_idx ON memory_conflicts (resolution_status) 
 WHERE resolution_status = 'unresolved';
 
+-- Confidence score index
+CREATE INDEX idx_memories_confidence ON memory_nodes(confidence_score);
+
+-- Namespace indexes
+CREATE INDEX idx_namespaces_owner ON memory_namespaces(owner_agent);
+CREATE INDEX idx_memories_namespace ON memory_nodes(namespace_id);
+
 -- =============================================================================
 -- GRAPH DATABASE INTEGRATION (Apache AGE)
 -- =============================================================================
@@ -268,6 +289,10 @@ CREATE TRIGGER update_memory_nodes_updated_at
 
 CREATE TRIGGER update_entities_updated_at 
     BEFORE UPDATE ON entities 
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_namespaces_updated_at 
+    BEFORE UPDATE ON memory_namespaces 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Track access to memories for importance scoring
@@ -332,6 +357,100 @@ BEGIN
     LIMIT limit_count;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Check if an agent has read access to a namespace
+CREATE OR REPLACE FUNCTION can_read_namespace(
+    p_agent_id TEXT,
+    p_namespace_id UUID
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_owner TEXT;
+    v_policy JSONB;
+BEGIN
+    -- Get namespace info
+    SELECT owner_agent, access_policy 
+    INTO v_owner, v_policy
+    FROM memory_namespaces
+    WHERE namespace_id = p_namespace_id;
+    
+    -- If namespace doesn't exist, deny
+    IF NOT FOUND THEN
+        RETURN FALSE;
+    END IF;
+    
+    -- Owner always has access
+    IF v_owner = p_agent_id THEN
+        RETURN TRUE;
+    END IF;
+    
+    -- Check read permission in access_policy
+    RETURN v_policy->'read' @> to_jsonb(p_agent_id::text);
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- Check if an agent has write access to a namespace
+CREATE OR REPLACE FUNCTION can_write_namespace(
+    p_agent_id TEXT,
+    p_namespace_id UUID
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_owner TEXT;
+    v_policy JSONB;
+BEGIN
+    -- Get namespace info
+    SELECT owner_agent, access_policy 
+    INTO v_owner, v_policy
+    FROM memory_namespaces
+    WHERE namespace_id = p_namespace_id;
+    
+    -- If namespace doesn't exist, deny
+    IF NOT FOUND THEN
+        RETURN FALSE;
+    END IF;
+    
+    -- Owner always has access
+    IF v_owner = p_agent_id THEN
+        RETURN TRUE;
+    END IF;
+    
+    -- Check write permission in access_policy
+    RETURN v_policy->'write' @> to_jsonb(p_agent_id::text);
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- Get memories accessible to an agent
+CREATE OR REPLACE FUNCTION get_agent_memories(
+    p_agent_id TEXT,
+    p_namespace_id UUID DEFAULT NULL,
+    p_limit INTEGER DEFAULT 100
+) RETURNS TABLE (
+    id UUID,
+    type memory_type,
+    content TEXT,
+    importance_score FLOAT,
+    namespace_id UUID,
+    namespace_name TEXT,
+    created_at TIMESTAMPTZ
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        m.id,
+        m.type,
+        m.content,
+        m.importance_score,
+        m.namespace_id,
+        n.name as namespace_name,
+        m.created_at
+    FROM memory_nodes m
+    LEFT JOIN memory_namespaces n ON m.namespace_id = n.namespace_id
+    WHERE 
+        (p_namespace_id IS NULL OR m.namespace_id = p_namespace_id)
+        AND (m.namespace_id IS NULL OR can_read_namespace(p_agent_id, m.namespace_id))
+    ORDER BY m.importance_score DESC, m.created_at DESC
+    LIMIT p_limit;
+END;
+$$ LANGUAGE plpgsql STABLE;
 
 -- =============================================================================
 -- VIEWS FOR COMMON QUERIES
@@ -402,6 +521,11 @@ INSERT INTO system_config (key, value, description) VALUES
 ('consolidation_frequency', '"daily"', 'How often to run consolidation'),
 ('max_memory_age_days', '365', 'Maximum age before aggressive decay'),
 ('similarity_threshold', '0.7', 'Default threshold for similarity matching');
+
+-- Create default namespace for Vex
+INSERT INTO memory_namespaces (name, owner_agent, access_policy)
+VALUES ('vex-main', 'vex', '{"read": ["vex"], "write": ["vex"]}'::jsonb)
+ON CONFLICT (name) DO NOTHING;
 
 -- =============================================================================
 -- SAMPLE QUERIES FOR TESTING
