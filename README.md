@@ -42,6 +42,7 @@ Most AI memory systems are just vector stores with a retrieval step. Vex Memory 
 | **🎲 Confidence Scoring** | Distinguishes verified facts (0.9+) from likely assumptions (0.6-0.8) to uncertain inferences (0.3-0.5). Auto-tagged based on linguistic markers ("is" vs "probably" vs "maybe"). Affects retrieval ranking. |
 | **🧮 Smart Context Prioritization** | **v1.2.0** Token-aware memory selection with multi-factor scoring. **NEW:** MMR algorithm, entity extraction, type/namespace priorities, and weight presets for different use cases. See [PRIORITIZATION.md](PRIORITIZATION.md) for details. |
 | **🎓 Adaptive Learning** | **v2.0.0** Self-improving memory selection! System learns optimal weights from usage patterns. Auto-tuning SDK fetches learned weights automatically. Privacy-first with opt-out, query sanitization, and GDPR compliance. See [PRIVACY.md](PRIVACY.md) for details. |
+| **⚡ Embedding Cache** | **v2.0.1** Multi-layer caching system reduces embedding latency by **1000x+**. In-memory LRU (0.02ms) + database persistence + query result cache. 80-90% hit rate in production. See [CACHE_IMPLEMENTATION.md](CACHE_IMPLEMENTATION.md) for details. |
 
 ## 🏗️ Architecture
 

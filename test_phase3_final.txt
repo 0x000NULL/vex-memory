@@ -1,0 +1,25 @@
+======================================================================
+🧪 Phase 3 Integration Test: Adaptive Learning
+======================================================================
+
+📝 Creating 20 test memories...
+✅ Created 0 memories
+
+🔍 Making 60 test queries...
+✅ Completed 60 queries
+
+📊 Testing analytics summary...
+✅ Analytics summary:
+   Total queries: 60
+   Avg tokens used: 1945.0
+   Avg token efficiency: 97.25%
+   Avg computation time: 479.3ms
+
+📖 Fetching learned weights...
+ℹ️  No learned weights found (expected before optimization)
+
+🎯 Triggering weight optimization...
+❌ Optimization failed: 500
+{"detail":"Optimization failed: operator does not exist: uuid = text\nLINE 1: ...LECT id::text, content FROM memory_nodes WHERE id = ANY(ARRA...\n                                                             ^\nHINT:  No operator matches the given name and argument types. You might need to add explicit type casts.\n"}
+
+❌ Optimization failed

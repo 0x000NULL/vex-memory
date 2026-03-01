@@ -36,6 +36,7 @@ from prioritizer import MemoryPrioritizer, ScoringWeights, PriorityMappings
 from weight_tuner import WeightTuner, WeightConfig
 import usage_analytics
 import weight_optimizer
+from embedding_cache import initialize_cache, get_cache
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -77,7 +78,7 @@ async def dashboard_js():
 # ---------------------------------------------------------------------------
 
 async def _get_embedding(text: str) -> Optional[List[float]]:
-    """Get embedding from Ollama. Returns None on failure (non-blocking)."""
+    """Get embedding from cache or Ollama. Returns None on failure (non-blocking)."""
     # Truncate if needed (Ollama model input limit)
     MAX_EMBED_LENGTH = 8000
     original_length = len(text)
@@ -87,6 +88,13 @@ async def _get_embedding(text: str) -> Optional[List[float]]:
         )
         text = text[:MAX_EMBED_LENGTH]
     
+    # Check cache first
+    cache = get_cache()
+    cached_embedding = cache.get_embedding(text)
+    if cached_embedding is not None:
+        return cached_embedding
+    
+    # Cache miss - generate from Ollama
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(f"{OLLAMA_URL}/api/embeddings", json={
@@ -94,7 +102,11 @@ async def _get_embedding(text: str) -> Optional[List[float]]:
                 "prompt": text,
             })
             if r.status_code == 200:
-                return r.json().get("embedding")
+                embedding = r.json().get("embedding")
+                if embedding:
+                    # Store in cache
+                    cache.set_embedding(text, embedding)
+                return embedding
             logger.warning(f"Ollama returned {r.status_code}")
     except Exception as e:
         logger.warning(f"Embedding generation failed (Ollama may be unavailable): {e}")
@@ -102,7 +114,7 @@ async def _get_embedding(text: str) -> Optional[List[float]]:
 
 
 def _get_embedding_sync(text: str) -> Optional[List[float]]:
-    """Synchronous embedding helper for non-async contexts."""
+    """Synchronous embedding helper for non-async contexts with caching."""
     # Truncate if needed (Ollama model input limit)
     MAX_EMBED_LENGTH = 8000
     original_length = len(text)
@@ -112,6 +124,13 @@ def _get_embedding_sync(text: str) -> Optional[List[float]]:
         )
         text = text[:MAX_EMBED_LENGTH]
     
+    # Check cache first
+    cache = get_cache()
+    cached_embedding = cache.get_embedding(text)
+    if cached_embedding is not None:
+        return cached_embedding
+    
+    # Cache miss - generate from Ollama
     try:
         with httpx.Client(timeout=30.0) as client:
             r = client.post(f"{OLLAMA_URL}/api/embeddings", json={
@@ -119,7 +138,11 @@ def _get_embedding_sync(text: str) -> Optional[List[float]]:
                 "prompt": text,
             })
             if r.status_code == 200:
-                return r.json().get("embedding")
+                embedding = r.json().get("embedding")
+                if embedding:
+                    # Store in cache
+                    cache.set_embedding(text, embedding)
+                return embedding
     except Exception as e:
         logger.warning(f"Sync embedding failed: {e}")
     return None
@@ -227,6 +250,7 @@ class HealthResponse(BaseModel):
     status: str
     database: bool
     memory_count: int = 0
+    cache_stats: Optional[Dict[str, Any]] = None
 
 
 class StatsResponse(BaseModel):
@@ -287,6 +311,20 @@ class PrioritizedContextResponse(BaseModel):
 _retriever: Optional[MemoryRetriever] = None
 
 
+# ---------------------------------------------------------------------------
+# Cache initialization
+# ---------------------------------------------------------------------------
+@app.on_event("startup")
+async def startup_event():
+    """Initialize embedding cache on startup."""
+    try:
+        conn = db.get_connection()
+        initialize_cache(conn)
+        logger.info("Embedding cache initialized successfully")
+    except Exception as e:
+        logger.warning(f"Could not initialize embedding cache: {e}")
+
+
 def _get_retriever() -> MemoryRetriever:
     global _retriever
     if _retriever is None:
@@ -345,10 +383,25 @@ def _load_retriever_from_db(retriever: MemoryRetriever):
 def health():
     db_ok = db.check_health()
     retriever = _get_retriever()
+    
+    # Include cache stats
+    cache_stats = None
+    try:
+        cache = get_cache()
+        stats = cache.get_stats()
+        cache_stats = {
+            "hit_rate": stats.get("hit_rate", 0.0),
+            "memory_cache_size": stats.get("memory_cache_size", 0),
+            "total_hits": stats.get("hits", 0),
+        }
+    except Exception:
+        pass  # Cache stats are optional
+    
     return HealthResponse(
         status="ok" if db_ok else "degraded",
         database=db_ok,
         memory_count=len(retriever.memories),
+        cache_stats=cache_stats,
     )
 
 
@@ -2245,3 +2298,124 @@ async def export_analytics_data(namespace: str, format: str = Query("json", rege
     except Exception as e:
         logger.error(f"Failed to export analytics data: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to export analytics: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Cache Management Endpoints
+# ---------------------------------------------------------------------------
+
+class CacheStatsResponse(BaseModel):
+    """Cache performance statistics."""
+    hits: int
+    misses: int
+    hit_rate: float
+    memory_hits: int
+    db_hits: int
+    evictions: int
+    avg_latency_ms: float
+    memory_cache_size: int
+    query_cache_size: int
+    db_cache: Optional[Dict[str, Any]] = None
+
+
+class CacheClearResponse(BaseModel):
+    """Response from cache clear operation."""
+    memory_cleared: int
+    database_cleared: int
+    message: str
+
+
+class CacheWarmupRequest(BaseModel):
+    """Request to warm up cache with common queries."""
+    common_texts: List[str] = Field(
+        ...,
+        description="List of frequently used text inputs to pre-cache",
+        max_items=100
+    )
+
+
+class CacheWarmupResponse(BaseModel):
+    """Response from cache warmup operation."""
+    cached_count: int
+    message: str
+
+
+@app.get("/api/cache/stats", response_model=CacheStatsResponse)
+async def get_cache_stats():
+    """
+    Get comprehensive cache statistics.
+    
+    Returns metrics including hit rate, latency, and cache sizes.
+    Useful for monitoring cache performance and debugging.
+    """
+    try:
+        cache = get_cache()
+        stats = cache.get_stats()
+        return CacheStatsResponse(**stats)
+    except Exception as e:
+        logger.error(f"Failed to get cache stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get cache stats: {str(e)}")
+
+
+@app.post("/api/cache/clear", response_model=CacheClearResponse)
+async def clear_cache():
+    """
+    Clear all cache layers (memory and database).
+    
+    Use with caution: this will cause temporary performance degradation
+    as cache warms up again. Useful for debugging or forcing fresh embeddings.
+    """
+    try:
+        cache = get_cache()
+        result = cache.clear_all()
+        
+        return CacheClearResponse(
+            memory_cleared=result["memory"],
+            database_cleared=result["database"],
+            message=f"Cleared {result['memory']} memory entries and {result['database']} database entries"
+        )
+    except Exception as e:
+        logger.error(f"Failed to clear cache: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
+
+
+@app.post("/api/cache/warmup", response_model=CacheWarmupResponse)
+async def warmup_cache(request: CacheWarmupRequest):
+    """
+    Pre-populate cache with common queries.
+    
+    Accepts a list of frequently used text inputs and generates
+    embeddings for them. Useful for reducing cold-start latency.
+    """
+    try:
+        cache = get_cache()
+        cached_count = cache.warmup(request.common_texts, _get_embedding_sync)
+        
+        return CacheWarmupResponse(
+            cached_count=cached_count,
+            message=f"Successfully cached {cached_count} embeddings"
+        )
+    except Exception as e:
+        logger.error(f"Failed to warm up cache: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to warm up cache: {str(e)}")
+
+
+@app.post("/api/cache/evict")
+async def evict_old_entries():
+    """
+    Evict old database cache entries.
+    
+    Removes entries older than configured retention period with low access counts.
+    This is automatically done periodically, but can be triggered manually.
+    """
+    try:
+        cache = get_cache()
+        evicted = cache.evict_old_entries()
+        
+        return {
+            "evicted": evicted,
+            "message": f"Evicted {evicted} old cache entries"
+        }
+    except Exception as e:
+        logger.error(f"Failed to evict cache entries: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to evict cache entries: {str(e)}")
