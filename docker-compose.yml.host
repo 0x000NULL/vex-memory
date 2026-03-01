@@ -1,0 +1,55 @@
+version: "3.9"
+
+services:
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile.db
+    network_mode: "host"
+    #ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vex_memory_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-vex_memory}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vex} -d ${POSTGRES_DB:-vex_memory}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    network_mode: "host"
+    #ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-vex}:${POSTGRES_PASSWORD:-vex_memory_dev}@db:5432/${POSTGRES_DB:-vex_memory}
+      VEX_ENV: ${VEX_ENV:-docker}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      EMBED_MODEL: ${EMBED_MODEL:-all-minilm}
+      AUTO_EXTRACT_ENABLED: ${AUTO_EXTRACT_ENABLED:-false}
+      AUTO_EXTRACT_THRESHOLD: ${AUTO_EXTRACT_THRESHOLD:-0.5}
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    profiles: ["qdrant"]
+    network_mode: "host"
+    #ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  pgdata:
+  qdrant_data:

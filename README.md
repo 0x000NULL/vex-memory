@@ -484,6 +484,112 @@ systemctl --user status vex-memory-sync.service
 
 The service is resource-limited to 256MB RAM and 20% CPU to prevent runaway usage.
 
+## 🤝 Multi-Agent Memory Namespaces
+
+Vex Memory supports **namespace-based memory sharing** so sub-agents can access your context without cold starts.
+
+### Concepts
+
+- **Namespace:** A logical container for memories with an owner and access policy
+- **Owner:** The agent who created the namespace (has full read/write access)
+- **Access Policy:** JSONB object with `read` and `write` arrays of agent IDs
+- **Default Namespace:** `vex-main` (all existing memories are backfilled here)
+
+### Use Cases
+
+1. **Sub-Agent Context Inheritance**
+   - When you spawn a sub-agent for a task, grant it read access to your namespace
+   - Sub-agent wakes up with your full context (no manual "read MEMORY.md" step)
+
+2. **Team Memory**
+   - Multiple humans + agents share a project namespace
+   - Everyone sees the same memory graph
+
+3. **Privacy Boundaries**
+   - Work namespace (accessible to work-related agents only)
+   - Personal namespace (private to you)
+
+### API Usage
+
+```bash
+# Create a new namespace
+curl -X POST http://localhost:8000/namespaces \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "project-apollo",
+    "owner_agent": "vex",
+    "access_policy": {"read": ["vex"], "write": ["vex"]}
+  }'
+
+# Response: {"namespace_id": "550e8400-...", "name": "project-apollo", ...}
+
+# Grant read access to a sub-agent
+curl -X POST http://localhost:8000/namespaces/550e8400-.../grant \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "sub-agent-123",
+    "permission": "read",
+    "grantor_agent": "vex"
+  }'
+
+# Create memory in specific namespace
+curl -X POST http://localhost:8000/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Apollo launch date confirmed: March 15, 2026",
+    "type": "semantic",
+    "namespace_id": "550e8400-..."
+  }'
+
+# Query memories filtered by namespace
+curl "http://localhost:8000/memories?namespace=550e8400-...&limit=20"
+
+# List all namespaces an agent can access
+curl "http://localhost:8000/namespaces?agent_id=vex"
+
+# Revoke access
+curl -X POST http://localhost:8000/namespaces/550e8400-.../revoke \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "sub-agent-123",
+    "permission": "read",
+    "revoker_agent": "vex"
+  }'
+```
+
+### Access Control Logic
+
+- **Owner:** Full read + write access (always)
+- **Read access:** Can query memories, cannot create/modify
+- **Write access:** Can create and modify memories (includes read)
+- **No access:** Namespace is invisible to the agent
+
+Access checks happen at the database level via `can_read_namespace(agent_id, namespace_id)` and `can_write_namespace(agent_id, namespace_id)` functions.
+
+### Database Functions
+
+```sql
+-- Check read access
+SELECT can_read_namespace('agent-123', '550e8400-...') AS can_read;
+
+-- Check write access
+SELECT can_write_namespace('agent-123', '550e8400-...') AS can_write;
+
+-- Get all memories an agent can access (respects namespaces)
+SELECT * FROM get_agent_memories('agent-123', NULL, 100);
+
+-- Get memories from specific namespace
+SELECT * FROM get_agent_memories('agent-123', '550e8400-...', 50);
+```
+
+### Best Practices
+
+1. **Default to vex-main:** If unsure, use the default namespace
+2. **Grant least privilege:** Only grant write access when necessary
+3. **Use descriptive names:** `project-apollo`, `personal-notes`, `work-context`
+4. **Clean up:** Delete namespaces when projects complete
+5. **Audit access:** Regularly review who has access to sensitive namespaces
+
 ## 🎲 Memory Confidence Scoring
 
 Vex Memory distinguishes between **verified facts** and **uncertain assumptions** using confidence scores (0.0-1.0):
