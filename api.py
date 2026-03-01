@@ -353,32 +353,59 @@ def create_memory(body: MemoryCreate):
         duplicates = find_duplicates(body.content, threshold=0.85)
         if duplicates:
             top = duplicates[0]
-            if top["similarity"] > 0.9:
-                # High similarity: merge instead of creating new
-                logger.info(f"Duplicate detected (similarity={top['similarity']:.3f}), merging with {top['id']}")
-                # Update existing memory with higher importance if needed
+            # Merge any duplicate above threshold (was >0.9, now >0.85 to catch more cases)
+            if top["similarity"] > 0.85:
+                logger.info(
+                    f"Duplicate detected (similarity={top['similarity']:.3f}), "
+                    f"merging with existing memory {top['id']}"
+                )
+                # Update existing memory: keep higher importance, longer content, merge metadata
                 import json as _json
+                
+                # Calculate merged confidence (average of old and new)
+                from confidence import assign_confidence
+                new_confidence = body.confidence_score
+                if new_confidence is None:
+                    metadata_for_scoring = body.metadata.copy()
+                    metadata_for_scoring["importance_score"] = body.importance_score
+                    metadata_for_scoring["source"] = body.source
+                    new_confidence = assign_confidence(body.content, body.type, metadata_for_scoring)
+                
                 with db.get_cursor() as cur:
+                    # Get existing memory's confidence and access count
+                    cur.execute(
+                        "SELECT confidence_score, access_count FROM memory_nodes WHERE id = %s",
+                        (top["id"],)
+                    )
+                    existing = cur.fetchone()
+                    if existing:
+                        avg_confidence = (existing["confidence_score"] + new_confidence) / 2.0
+                        new_access_count = existing["access_count"] + 1
+                    else:
+                        avg_confidence = new_confidence
+                        new_access_count = 1
+                    
                     cur.execute(
                         """UPDATE memory_nodes
                            SET importance_score = GREATEST(importance_score, %s),
+                               confidence_score = %s,
+                               access_count = %s,
                                content = CASE WHEN LENGTH(content) >= LENGTH(%s) THEN content ELSE %s END,
                                metadata = metadata || %s::jsonb
                            WHERE id = %s
                            RETURNING id, type::text, content, importance_score, confidence_score, decay_factor,
-                                     access_count, source, event_time, created_at, metadata""",
-                        (body.importance_score, body.content, body.content,
-                         _json.dumps({"merge_source": body.source or "api"}),
+                                     access_count, source, event_time, created_at, namespace_id::text, metadata""",
+                        (body.importance_score, avg_confidence, new_access_count,
+                         body.content, body.content,
+                         _json.dumps({"merge_source": body.source or "api", "merged_at": datetime.now().isoformat()}),
                          top["id"]),
                     )
                     row = cur.fetchone()
                     if row:
+                        logger.info(f"Successfully merged into memory {top['id']}")
                         return MemoryOut(**row)
-            elif top["similarity"] > 0.85:
-                logger.warning(
-                    f"Near-duplicate detected (similarity={top['similarity']:.3f}) "
-                    f"with memory {top['id']}. Inserting anyway."
-                )
+                    else:
+                        logger.warning(f"Merge UPDATE returned no rows for {top['id']}, creating new memory instead")
     except Exception as e:
         logger.warning(f"Duplicate check failed, proceeding with insert: {e}")
 
