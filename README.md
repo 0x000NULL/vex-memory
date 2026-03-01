@@ -41,6 +41,7 @@ Most AI memory systems are just vector stores with a retrieval step. Vex Memory 
 | **🎯 Importance Decay** | Memories that aren't accessed gradually lose importance score over time, keeping the most relevant context surfaced. |
 | **🎲 Confidence Scoring** | Distinguishes verified facts (0.9+) from likely assumptions (0.6-0.8) to uncertain inferences (0.3-0.5). Auto-tagged based on linguistic markers ("is" vs "probably" vs "maybe"). Affects retrieval ranking. |
 | **🧮 Smart Context Prioritization** | **v1.2.0** Token-aware memory selection with multi-factor scoring. **NEW:** MMR algorithm, entity extraction, type/namespace priorities, and weight presets for different use cases. See [PRIORITIZATION.md](PRIORITIZATION.md) for details. |
+| **🎓 Adaptive Learning** | **v2.0.0** Self-improving memory selection! System learns optimal weights from usage patterns. Auto-tuning SDK fetches learned weights automatically. Privacy-first with opt-out, query sanitization, and GDPR compliance. See [PRIVACY.md](PRIVACY.md) for details. |
 
 ## 🏗️ Architecture
 

@@ -488,3 +488,353 @@ To add support for new models:
 ## License
 
 Same as vex-memory main project.
+
+---
+
+## Phase 3: Adaptive Learning (v2.0.0)
+
+### Overview
+
+Vex Memory v2.0.0 introduces **self-improving memory selection** through usage analytics and automatic weight optimization. The system learns from your query patterns to find the optimal weight configuration for your use case.
+
+### How It Works
+
+1. **Usage Tracking**: Every `POST /api/memories/prioritized-context` call is logged (if enabled)
+2. **Pattern Analysis**: System analyzes which weights work best for your queries
+3. **Optimization**: Grid search finds optimal weights that maximize diversity + token efficiency
+4. **Auto-Tuning**: SDK automatically fetches and uses learned weights
+
+### Architecture
+
+```
+Query → API → Prioritizer → Selected Memories
+         ↓
+    Analytics Logger
+         ↓
+    query_logs table
+         ↓
+    Weight Optimizer (periodic)
+         ↓
+    learned_weights table
+         ↓
+    SDK Auto-Tuning
+```
+
+### Usage Analytics
+
+#### What's Logged
+
+Per query:
+- Query text (can be sanitized)
+- Weights used
+- Memories selected (IDs only)
+- Token usage (used / budget)
+- Performance (computation time)
+- Metadata (search type, thresholds, etc.)
+
+#### Privacy Controls
+
+**Disable logging:**
+```bash
+USAGE_LOGGING_ENABLED=false
+```
+
+**Sanitize queries:**
+```bash
+SANITIZE_QUERIES=true  # Hashes query text
+```
+
+**Configure retention:**
+```bash
+USAGE_LOG_RETENTION_DAYS=90  # Default: 90 days
+```
+
+See [PRIVACY.md](PRIVACY.md) for full details.
+
+#### View Analytics
+
+**API:**
+```bash
+curl "http://localhost:8000/api/weights/analytics?namespace=my-agent"
+```
+
+**SDK:**
+```python
+client = VexMemoryClient()
+summary = client.get_analytics_summary("my-agent")
+
+print(f"Total queries: {summary['total_queries']}")
+print(f"Avg token efficiency: {summary['avg_token_efficiency']:.2%}")
+print(f"Avg memories retrieved: {summary['avg_memories_retrieved']}")
+```
+
+**Output:**
+```json
+{
+  "enabled": true,
+  "namespace": "my-agent",
+  "total_queries": 234,
+  "avg_tokens_used": 3456.7,
+  "avg_tokens_budget": 4000.0,
+  "avg_token_efficiency": 0.864,
+  "avg_memories_retrieved": 12.3,
+  "avg_memories_dropped": 8.1,
+  "avg_computation_time_ms": 42.5,
+  "first_query": "2026-02-15T10:00:00Z",
+  "last_query": "2026-03-01T08:00:00Z"
+}
+```
+
+### Weight Optimization
+
+#### When to Optimize
+
+After **50+ queries** (configurable), the system has enough data to learn optimal weights.
+
+#### How Optimization Works
+
+1. **Data Split**: 80% training, 20% validation
+2. **Grid Search**: Tests multiple weight combinations
+3. **Evaluation**: Each combination scored on validation set
+4. **Objective Function**: `diversity_score + token_efficiency`
+   - **Diversity**: Average Jaccard distance between selected memories
+   - **Token Efficiency**: `tokens_used / tokens_budget`
+5. **Selection**: Best-performing weights are saved
+
+#### Trigger Optimization
+
+**API:**
+```bash
+curl -X POST http://localhost:8000/api/weights/optimize \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "my-agent",
+    "min_queries": 50
+  }'
+```
+
+**SDK:**
+```python
+client = VexMemoryClient()
+
+result = client.trigger_weight_optimization(
+    namespace="my-agent",
+    min_queries=50
+)
+
+print(f"Best weights: {result['best_weights']}")
+print(f"Objective score: {result['objective_score']}")
+print(f"Training queries: {result['metadata']['training_queries']}")
+```
+
+**Output:**
+```json
+{
+  "weight_id": "123e4567-e89b-12d3-a456-426614174000",
+  "history_id": "234e5678-f89c-23e4-b567-537725285111",
+  "namespace": "my-agent",
+  "best_weights": {
+    "similarity": 0.45,
+    "importance": 0.35,
+    "recency": 0.2
+  },
+  "objective_score": 1.28,
+  "metadata": {
+    "training_queries": 120,
+    "validation_queries": 30,
+    "combinations_tested": 50,
+    "computation_time_ms": 1250.5,
+    "avg_diversity_score": 0.68,
+    "avg_token_efficiency": 0.85
+  }
+}
+```
+
+#### Custom Search Space
+
+Override default search space:
+
+```python
+result = client.trigger_weight_optimization(
+    namespace="my-agent",
+    search_space={
+        "similarity": [0.3, 0.4, 0.5, 0.6],
+        "importance": [0.2, 0.3, 0.4],
+        "recency": [0.1, 0.2, 0.3]
+    }
+)
+```
+
+### Auto-Tuning (SDK)
+
+#### Enable Auto-Tuning
+
+```python
+client = VexMemoryClient()
+
+# Enable auto-tuning for a namespace
+client.enable_auto_tuning(
+    namespace="my-agent",
+    refresh_interval=3600  # Refresh weights every hour
+)
+
+# Now use build_context() normally
+context = client.build_context(
+    query="What are the latest deployment strategies?",
+    token_budget=4000
+)
+
+# Automatically uses learned weights (if available)
+# Falls back to defaults if no learned weights exist
+```
+
+#### How Auto-Tuning Works
+
+1. **Fetch Learned Weights**: On enable, fetches current learned weights
+2. **Background Refresh**: Thread refreshes weights every `refresh_interval` seconds
+3. **Automatic Application**: `build_context()` uses learned weights automatically
+4. **Manual Override**: Explicitly passing `weights=` always takes precedence
+
+#### Weight Priority
+
+```python
+# Priority order:
+# 1. Explicit user weights (highest priority)
+context = client.build_context("query", weights={"similarity": 0.5, ...})
+
+# 2. Learned weights (if auto-tuning enabled)
+client.enable_auto_tuning("my-agent")
+context = client.build_context("query")  # Uses learned weights
+
+# 3. Server defaults (lowest priority)
+context = client.build_context("query")  # Uses server defaults
+```
+
+#### Disable Auto-Tuning
+
+```python
+client.disable_auto_tuning()
+```
+
+### Complete Workflow Example
+
+```python
+from vex_memory import VexMemoryClient
+
+# 1. Initialize client
+client = VexMemoryClient()
+
+# 2. Use normally (with default weights)
+for i in range(100):
+    context = client.build_context(
+        query=f"Query {i}",
+        token_budget=4000,
+        namespace="my-agent"
+    )
+    # Usage is logged automatically
+
+# 3. After enough queries, trigger optimization
+result = client.trigger_weight_optimization("my-agent")
+print(f"Learned weights: {result['best_weights']}")
+
+# 4. Enable auto-tuning
+client.enable_auto_tuning(namespace="my-agent")
+
+# 5. Continue using - now with optimized weights
+context = client.build_context(
+    query="Important query",
+    token_budget=4000
+)
+# Automatically uses learned weights
+
+# 6. Check performance improvement
+summary = client.get_analytics_summary("my-agent")
+print(f"Token efficiency improved to: {summary['avg_token_efficiency']:.2%}")
+```
+
+### Performance
+
+- **Logging overhead**: <2ms per query (non-blocking)
+- **Optimization time**: <5s for 1000 queries
+- **Background refresh**: Negligible CPU/memory
+- **No impact on query latency**
+
+### Data Management
+
+#### Export Analytics
+
+```python
+# JSON export
+data = client.export_analytics("my-agent", format="json")
+
+# CSV export
+csv_data = client.export_analytics("my-agent", format="csv")
+```
+
+#### Delete Analytics (GDPR)
+
+```python
+result = client.delete_analytics("my-agent")
+print(f"Deleted {result['deleted_logs']} query logs")
+```
+
+### Troubleshooting
+
+**Q: Optimization fails with "Insufficient data"**
+
+A: You need at least 50 queries (by default). Check analytics:
+```python
+summary = client.get_analytics_summary("my-agent")
+print(f"Queries: {summary['total_queries']}")
+```
+
+**Q: Auto-tuning not improving results**
+
+A: Check if learned weights exist:
+```python
+try:
+    weights = client.get_learned_weights("my-agent")
+    print(f"Learned weights: {weights['weights']}")
+except VexMemoryAPIError:
+    print("No learned weights - trigger optimization first")
+```
+
+**Q: How often should I re-optimize?**
+
+A: Recommendations:
+- **Initial**: After 50-100 queries
+- **Periodic**: Weekly or after major query pattern changes
+- **Automatic**: Future versions will support automatic re-optimization
+
+**Q: Can I use different weights for different query types?**
+
+A: Not yet. Currently, one weight configuration per namespace. Future versions may support query-type-specific weights.
+
+### Best Practices
+
+1. **Let it Learn**: Run 50-100 queries before optimizing
+2. **Monitor Performance**: Check analytics summary regularly
+3. **Re-optimize**: Re-run optimization after major usage changes
+4. **Privacy**: Enable query sanitization if queries contain sensitive data
+5. **Retention**: Adjust retention period based on your needs (30-90 days recommended)
+6. **Manual Override**: Use explicit weights when you know exactly what you want
+
+### Limitations
+
+- **Minimum Data**: Requires 50+ queries for optimization
+- **Namespace-Level**: One weight config per namespace (no per-user yet)
+- **Static Weights**: Weights don't adapt in real-time (periodic optimization required)
+- **Grid Search Only**: No advanced optimization algorithms yet (planned for v2.1.0)
+
+### Future Enhancements (v2.1.0+)
+
+- **User Feedback**: Thumbs up/down on results to improve optimization
+- **Online Learning**: Real-time weight adaptation
+- **Query Clustering**: Different weights for different query types
+- **Bayesian Optimization**: More efficient weight search
+- **A/B Testing**: Compare weight configurations automatically
+
+---
+
+For privacy details, see [PRIVACY.md](PRIVACY.md).
+For full changelog, see [CHANGELOG.md](CHANGELOG.md).

@@ -34,6 +34,8 @@ import access_control
 from token_estimator import TokenEstimator
 from prioritizer import MemoryPrioritizer, ScoringWeights, PriorityMappings
 from weight_tuner import WeightTuner, WeightConfig
+import usage_analytics
+import weight_optimizer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -889,7 +891,11 @@ async def get_prioritized_context(request: PrioritizedContextRequest):
     - Diversity filtering (Jaccard similarity)
     - Budget enforcement (never exceeds token limit)
     - Graceful truncation for oversized memories
+    - Usage analytics logging for adaptive learning
     """
+    import time
+    start_time = time.time()
+    
     try:
         # Initialize token estimator and prioritizer
         token_estimator = TokenEstimator(model=request.model)
@@ -1023,6 +1029,38 @@ async def get_prioritized_context(request: PrioritizedContextRequest):
         metadata["search_type"] = "prioritized_semantic" if query_embedding else "prioritized_keyword"
         metadata["model"] = request.model
         metadata["diversity_threshold"] = request.diversity_threshold
+        
+        # Calculate computation time
+        computation_time_ms = (time.time() - start_time) * 1000
+        
+        # Log usage analytics (non-blocking)
+        if usage_analytics.is_enabled():
+            try:
+                weights_dict = weights.dict() if hasattr(weights, 'dict') else {
+                    "similarity": weights.similarity,
+                    "importance": weights.importance,
+                    "recency": weights.recency
+                }
+                
+                usage_analytics.log_query(
+                    namespace=request.namespace or "default",
+                    query=request.query,
+                    weights_used=weights_dict,
+                    memories_selected=[m["id"] for m in selected_memories],
+                    total_tokens_used=metadata.get("total_tokens", 0),
+                    total_tokens_budget=request.token_budget,
+                    memories_retrieved=len(candidate_memories),
+                    memories_dropped=len(candidate_memories) - len(selected_memories),
+                    computation_time_ms=computation_time_ms,
+                    metadata={
+                        "diversity_threshold": request.diversity_threshold,
+                        "min_score": request.min_score,
+                        "search_type": metadata["search_type"]
+                    }
+                )
+            except Exception as log_err:
+                # Don't fail the request if logging fails
+                logger.warning(f"Failed to log usage analytics: {log_err}")
         
         return PrioritizedContextResponse(
             memories=memory_outputs,
@@ -2042,3 +2080,168 @@ def get_namespace_permissions(namespace_id: str):
     except Exception as e:
         logger.error(f"Failed to get permissions: {e}")
         raise HTTPException(500, f"Failed to get permissions: {e}")
+
+
+# =============================================================================
+# WEIGHT OPTIMIZATION ENDPOINTS (Phase 3: Adaptive Learning)
+# =============================================================================
+
+class OptimizeWeightsRequest(BaseModel):
+    """Request to optimize weights for a namespace."""
+    namespace: str
+    search_space: Optional[Dict[str, List[float]]] = None
+    min_queries: int = Field(50, description="Minimum queries required for optimization")
+
+
+class OptimizeWeightsResponse(BaseModel):
+    """Response from weight optimization."""
+    weight_id: str
+    history_id: str
+    namespace: str
+    best_weights: Dict[str, float]
+    objective_score: float
+    metadata: Dict[str, Any]
+
+
+class LearnedWeightsResponse(BaseModel):
+    """Learned weights for a namespace."""
+    id: str
+    namespace: str
+    weights: Dict[str, float]
+    objective_score: float
+    training_queries: int
+    optimization_method: str
+    avg_diversity_score: Optional[float]
+    avg_token_efficiency: Optional[float]
+    created_at: datetime
+    updated_at: datetime
+
+
+class AnalyticsSummaryResponse(BaseModel):
+    """Analytics summary for a namespace."""
+    enabled: bool
+    namespace: Optional[str] = None
+    total_queries: Optional[int] = None
+    avg_tokens_used: Optional[float] = None
+    avg_tokens_budget: Optional[float] = None
+    avg_token_efficiency: Optional[float] = None
+    avg_memories_retrieved: Optional[float] = None
+    avg_memories_dropped: Optional[float] = None
+    avg_computation_time_ms: Optional[float] = None
+    first_query: Optional[datetime] = None
+    last_query: Optional[datetime] = None
+
+
+@app.post("/api/weights/optimize", response_model=OptimizeWeightsResponse)
+async def optimize_weights(request: OptimizeWeightsRequest):
+    """
+    Optimize weight configuration for a namespace based on historical data.
+    
+    Performs grid search over weight combinations to maximize:
+    - Memory diversity (Jaccard distance)
+    - Token efficiency (usage / budget)
+    
+    Requires minimum number of historical queries (default: 50).
+    """
+    try:
+        result = weight_optimizer.optimize_namespace(
+            namespace=request.namespace,
+            search_space=request.search_space,
+            min_queries=request.min_queries
+        )
+        return OptimizeWeightsResponse(**result)
+    
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Weight optimization failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Optimization failed: {str(e)}")
+
+
+@app.get("/api/weights/learned/{namespace}", response_model=LearnedWeightsResponse)
+async def get_learned_weights(namespace: str):
+    """
+    Get active learned weights for a namespace.
+    
+    Returns the currently active weight configuration that was learned
+    from historical usage patterns.
+    """
+    try:
+        weights = weight_optimizer.get_learned_weights(namespace)
+        
+        if not weights:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No learned weights found for namespace: {namespace}"
+            )
+        
+        return LearnedWeightsResponse(**weights)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get learned weights: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get learned weights: {str(e)}")
+
+
+@app.get("/api/weights/analytics", response_model=AnalyticsSummaryResponse)
+async def get_analytics_summary(namespace: str = Query(..., description="Namespace to query")):
+    """
+    Get usage analytics summary for a namespace.
+    
+    Returns aggregate statistics about query patterns, token usage,
+    and performance metrics.
+    """
+    try:
+        summary = usage_analytics.get_analytics_summary(namespace)
+        return AnalyticsSummaryResponse(**summary)
+    
+    except Exception as e:
+        logger.error(f"Failed to get analytics summary: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get analytics: {str(e)}")
+
+
+@app.delete("/api/analytics/{namespace}")
+async def delete_analytics_data(namespace: str):
+    """
+    Delete all analytics data for a namespace (GDPR compliance).
+    
+    This permanently removes all query logs and cannot be undone.
+    """
+    try:
+        deleted_count = usage_analytics.delete_namespace_data(namespace)
+        return {
+            "namespace": namespace,
+            "deleted_logs": deleted_count,
+            "message": f"Deleted {deleted_count} query logs for namespace {namespace}"
+        }
+    
+    except Exception as e:
+        logger.error(f"Failed to delete analytics data: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete analytics: {str(e)}")
+
+
+@app.get("/api/analytics/{namespace}/export")
+async def export_analytics_data(namespace: str, format: str = Query("json", regex="^(json|csv)$")):
+    """
+    Export analytics data for a namespace (data portability).
+    
+    Supports JSON and CSV formats.
+    """
+    try:
+        data = usage_analytics.export_namespace_data(namespace, format=format)
+        
+        if format == "json":
+            from fastapi.responses import JSONResponse
+            return JSONResponse(content=json.loads(data))
+        else:  # csv
+            from fastapi.responses import Response
+            return Response(
+                content=data,
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename=analytics_{namespace}.csv"}
+            )
+    
+    except Exception as e:
+        logger.error(f"Failed to export analytics data: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to export analytics: {str(e)}")
