@@ -73,11 +73,20 @@ async def dashboard_js():
 
 async def _get_embedding(text: str) -> Optional[List[float]]:
     """Get embedding from Ollama. Returns None on failure (non-blocking)."""
+    # Truncate if needed (Ollama model input limit)
+    MAX_EMBED_LENGTH = 8000
+    original_length = len(text)
+    if original_length > MAX_EMBED_LENGTH:
+        logger.warning(
+            f"Content truncated from {original_length} to {MAX_EMBED_LENGTH} chars for embedding generation"
+        )
+        text = text[:MAX_EMBED_LENGTH]
+    
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(f"{OLLAMA_URL}/api/embeddings", json={
                 "model": EMBED_MODEL,
-                "prompt": text[:8000],  # limit input
+                "prompt": text,
             })
             if r.status_code == 200:
                 return r.json().get("embedding")
@@ -89,11 +98,20 @@ async def _get_embedding(text: str) -> Optional[List[float]]:
 
 def _get_embedding_sync(text: str) -> Optional[List[float]]:
     """Synchronous embedding helper for non-async contexts."""
+    # Truncate if needed (Ollama model input limit)
+    MAX_EMBED_LENGTH = 8000
+    original_length = len(text)
+    if original_length > MAX_EMBED_LENGTH:
+        logger.warning(
+            f"Content truncated from {original_length} to {MAX_EMBED_LENGTH} chars for embedding generation"
+        )
+        text = text[:MAX_EMBED_LENGTH]
+    
     try:
         with httpx.Client(timeout=30.0) as client:
             r = client.post(f"{OLLAMA_URL}/api/embeddings", json={
                 "model": EMBED_MODEL,
-                "prompt": text[:8000],
+                "prompt": text,
             })
             if r.status_code == 200:
                 return r.json().get("embedding")
@@ -375,6 +393,13 @@ def create_memory(body: MemoryCreate):
     else:
         confidence = body.confidence_score
 
+    # Track truncation for large content
+    MAX_EMBED_LENGTH = 8000
+    content_metadata = body.metadata.copy()
+    if len(body.content) > MAX_EMBED_LENGTH:
+        content_metadata["truncated"] = True
+        content_metadata["original_length"] = len(body.content)
+
     # Try to generate embedding (best-effort, non-blocking on failure)
     embedding = _get_embedding_sync(body.content)
 
@@ -392,7 +417,7 @@ def create_memory(body: MemoryCreate):
                     (
                         mem_id, body.type, body.content, body.importance_score, confidence,
                         body.source, body.event_time, body.namespace_id,
-                        _json.dumps(body.metadata),
+                        _json.dumps(content_metadata),
                         str(embedding),
                     ),
                 )
@@ -406,7 +431,7 @@ def create_memory(body: MemoryCreate):
                     (
                         mem_id, body.type, body.content, body.importance_score, confidence,
                         body.source, body.event_time, body.namespace_id,
-                        _json.dumps(body.metadata),
+                        _json.dumps(content_metadata),
                     ),
                 )
             row = cur.fetchone()
@@ -419,7 +444,7 @@ def create_memory(body: MemoryCreate):
                 importance_score=body.importance_score,
                 source=body.source,
                 event_time=body.event_time,
-                metadata=body.metadata,
+                metadata=content_metadata,
             )
             retriever = _get_retriever()
             retriever.memories.append(node)
@@ -437,7 +462,7 @@ def create_memory(body: MemoryCreate):
         importance_score=body.importance_score,
         source=body.source,
         event_time=body.event_time,
-        metadata=body.metadata,
+        metadata=content_metadata,
     )
     retriever = _get_retriever()
     retriever.memories.append(node)

@@ -66,6 +66,48 @@ class TestQuery:
         assert r.status_code == 400
 
 
+class TestLargeContentHandling:
+    """Test large content handling (Bug 3)."""
+    
+    def test_large_content_truncation_and_metadata(self, client):
+        """Verify large content (>8000 chars) is handled gracefully with truncation metadata."""
+        # Create memory with 10,000 char content
+        large_content = "x" * 10000
+        response = client.post("/memories", json={
+            "content": large_content,
+            "type": "semantic",
+            "importance_score": 0.5
+        })
+        
+        # Should succeed (no timeout)
+        assert response.status_code == 201, f"Failed to create large memory: {response.text}"
+        
+        data = response.json()
+        
+        # Content should be stored in full
+        assert data["content"] == large_content, "Content should be stored completely"
+        
+        # Metadata should indicate truncation
+        assert "metadata" in data, "Response should include metadata"
+        assert data["metadata"].get("truncated") is True, "Metadata should indicate truncation"
+        assert data["metadata"].get("original_length") == 10000, "Metadata should record original length"
+    
+    def test_normal_content_no_truncation_metadata(self, client):
+        """Verify normal-sized content doesn't get truncation metadata."""
+        normal_content = "x" * 1000
+        response = client.post("/memories", json={
+            "content": normal_content,
+            "type": "semantic"
+        })
+        
+        assert response.status_code == 201
+        data = response.json()
+        
+        # Should not have truncation metadata
+        metadata = data.get("metadata", {})
+        assert metadata.get("truncated") is not True
+
+
 class TestConfidenceFiltering:
     """Test confidence filter precision (Bug 2)."""
     
