@@ -31,6 +31,8 @@ import decay
 from temporal import parse_temporal_expression, temporal_search as temporal_search_fn, get_timeline as temporal_get_timeline, whats_changed_since
 import feedback
 import access_control
+from token_estimator import TokenEstimator
+from prioritizer import MemoryPrioritizer, ScoringWeights
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -257,6 +259,23 @@ class GrantAccessResponse(BaseModel):
     name: str
     owner_agent: Optional[str]
     access_policy: Dict[str, List[str]]
+
+
+# Prioritized Context models
+class PrioritizedContextRequest(BaseModel):
+    query: str
+    token_budget: int = Field(default=4000, gt=0, description="Maximum tokens to use in context")
+    model: str = Field(default="gpt-4", description="LLM model for token counting")
+    weights: Optional[Dict[str, float]] = Field(default=None, description="Scoring weights (similarity, importance, recency, diversity)")
+    diversity_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Jaccard similarity threshold for diversity filtering")
+    min_score: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Minimum score threshold")
+    namespace: Optional[str] = Field(default=None, description="Optional namespace filter")
+    limit: int = Field(default=100, gt=0, le=500, description="Maximum candidate memories to retrieve")
+
+
+class PrioritizedContextResponse(BaseModel):
+    memories: List[MemoryOut]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -830,6 +849,165 @@ def query_memories(body: QueryRequest):
         total_tokens=ctx.total_tokens,
         metadata={**ctx.assembly_metadata, "search_type": "keyword"},
     )
+
+
+@app.post("/api/memories/prioritized-context", response_model=PrioritizedContextResponse)
+async def get_prioritized_context(request: PrioritizedContextRequest):
+    """
+    Get intelligently prioritized memories within token budget.
+    
+    Uses multi-factor scoring (similarity, importance, recency) with diversity filtering
+    to maximize context relevance while enforcing strict token budgets.
+    
+    Features:
+    - Accurate token counting with tiktoken
+    - Multi-factor scoring with configurable weights
+    - Diversity filtering (Jaccard similarity)
+    - Budget enforcement (never exceeds token limit)
+    - Graceful truncation for oversized memories
+    """
+    try:
+        # Initialize token estimator and prioritizer
+        token_estimator = TokenEstimator(model=request.model)
+        
+        # Parse weights or use defaults
+        if request.weights:
+            weights = ScoringWeights(**request.weights)
+        else:
+            weights = ScoringWeights()
+        
+        prioritizer = MemoryPrioritizer(token_estimator=token_estimator, weights=weights)
+        
+        # Get candidate memories via semantic search
+        query_embedding = await _get_embedding(request.query)
+        
+        if not query_embedding:
+            # Fallback to keyword-based retrieval if embedding fails
+            logger.warning("Embedding generation failed for prioritized context, using keyword search")
+            retriever = _get_retriever()
+            qc = QueryContext(query=request.query, max_tokens=request.token_budget)
+            ctx = retriever.query(qc)
+            
+            # Convert to dict format for prioritizer
+            candidate_memories = [
+                {
+                    "id": m.id,
+                    "content": m.content,
+                    "importance_score": m.importance_score,
+                    "event_time": m.event_time,
+                    "type": m.type.value,
+                    "similarity_score": 0.5,  # Neutral score
+                    "metadata": {}
+                }
+                for m in ctx.memories[:request.limit]
+            ]
+        else:
+            # Semantic search via database
+            with db.get_cursor() as cur:
+                # Build query
+                sql = """
+                    SELECT 
+                        id::text, 
+                        type::text, 
+                        content, 
+                        importance_score, 
+                        decay_factor,
+                        access_count, 
+                        source, 
+                        event_time, 
+                        created_at, 
+                        namespace_id,
+                        metadata,
+                        1.0 - (embedding <=> %s::vector) AS similarity_score
+                    FROM memory_nodes
+                    WHERE embedding IS NOT NULL
+                """
+                
+                params = [str(query_embedding)]
+                
+                # Add namespace filter if provided
+                if request.namespace:
+                    # Validate UUID format
+                    try:
+                        import uuid as _uuid_module
+                        namespace_uuid = str(_uuid_module.UUID(request.namespace))
+                        sql += " AND namespace_id = %s"
+                        params.append(namespace_uuid)
+                    except (ValueError, AttributeError):
+                        # Invalid UUID format - skip filter (will return no results or all results)
+                        logger.warning(f"Invalid namespace UUID format: {request.namespace}")
+                
+                sql += """
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                """
+                params.extend([str(query_embedding), request.limit])
+                
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+                
+                # Convert to dict format for prioritizer
+                candidate_memories = [
+                    {
+                        "id": row["id"],
+                        "content": row["content"],
+                        "importance_score": row.get("importance_score", 0.5),
+                        "event_time": row.get("event_time"),
+                        "type": row.get("type", "semantic"),
+                        "similarity_score": row.get("similarity_score", 0.0),
+                        "source": row.get("source"),
+                        "created_at": row.get("created_at"),
+                        "namespace_id": row.get("namespace_id"),
+                        "metadata": row.get("metadata", {}),
+                        "decay_factor": row.get("decay_factor", 1.0),
+                        "access_count": row.get("access_count", 0)
+                    }
+                    for row in rows
+                ]
+        
+        # Prioritize memories within token budget
+        selected_memories, metadata = prioritizer.prioritize(
+            memories=candidate_memories,
+            token_budget=request.token_budget,
+            diversity_threshold=request.diversity_threshold,
+            min_score=request.min_score
+        )
+        
+        # Track access for selected memories
+        for memory in selected_memories:
+            decay.update_access(memory["id"])
+        
+        # Convert to MemoryOut format
+        memory_outputs = [
+            MemoryOut(
+                id=m["id"],
+                type=m.get("type", "semantic"),
+                content=m["content"],
+                importance_score=m.get("importance_score", 0.5),
+                decay_factor=m.get("decay_factor", 1.0),
+                access_count=m.get("access_count", 0),
+                source=m.get("source", ""),
+                event_time=m.get("event_time"),
+                created_at=m.get("created_at"),
+                namespace_id=m.get("namespace_id"),
+                metadata=m.get("metadata", {})
+            )
+            for m in selected_memories
+        ]
+        
+        # Enhance metadata with search info
+        metadata["search_type"] = "prioritized_semantic" if query_embedding else "prioritized_keyword"
+        metadata["model"] = request.model
+        metadata["diversity_threshold"] = request.diversity_threshold
+        
+        return PrioritizedContextResponse(
+            memories=memory_outputs,
+            metadata=metadata
+        )
+        
+    except Exception as e:
+        logger.error(f"Prioritized context error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to generate prioritized context: {str(e)}")
 
 
 @app.post("/extract")
